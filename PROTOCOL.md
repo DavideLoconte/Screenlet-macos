@@ -26,6 +26,19 @@ Roles: the app is the server (listens), the computer is the client (connects).
 | Cable: app read size | 16 KiB |
 | Cable: computer max write | 48 KiB |
 | Cable: max frame `length` | 1 MiB |
+| Wi-Fi Direct group owner address | `192.168.49.1` |
+
+## 0. Paths
+
+The computer picks the path by itself, in this order:
+
+1. **Cable** (§4), whenever a tablet is plugged in.
+2. **Network**: a paired tablet announced with Bonjour.
+3. **Wi-Fi Direct**: when neither, the tablet runs a Wi-Fi Direct group of
+   its own, and a computer that learned its credentials (§2.1) MAY join it
+   as an ordinary Wi-Fi network and connect to the group owner's address.
+   The app starts the group only while it is on no Wi-Fi network and has no
+   cable: the group's radio time would slow a Wi-Fi network down.
 
 ## Implementation map
 
@@ -77,6 +90,7 @@ The computer sends first; the app replies.
 | `paired` | both | bool | this side knows the other's certificate |
 | `pair` | computer | bool | user asked to pair with this tablet |
 | `at` | app | string | the app's address as reached by the computer |
+| `p2p` | app | object | `ssid`, `passphrase`, `at`: its Wi-Fi Direct group (§0). Only when both sides are paired; the computer stores it with the pairing |
 
 ### 2.2 Pairing
 
@@ -131,7 +145,7 @@ Reply, one of:
 | `key` | fresh random AES-256 key per session |
 | `port` | the sender's UDP port; ignored over the cable |
 | `width`, `height` | the tablet's screen in pixels, landscape (`width ≥ height`) |
-| `refresh` | the tablet's refresh rate in Hz |
+| `refresh` | the fastest refresh rate the tablet's panel runs at during the session, in Hz. The computer SHOULD capture at it, capped at what it sustains |
 | `codecs` | request: the codecs the computer encodes in hardware (§3.3), its preferred first. Software H.264 only if it has none |
 | `codec` | reply: the codec of the session (below). The computer MUST encode it, and MUST close the link if it is not one it offered |
 | `decoders` | reply, optional: the tablet's profile. For each codec it decodes in hardware, the frames per second its decoder sustains at `width`×`height` (as the device measured it, or as its maker declares). The computer MAY use it to choose an automatic resolution the decoder keeps up with |
@@ -157,8 +171,9 @@ datagram  = nonce ‖ ciphertext ‖ tag[16]
 
 - `direction`: `1` computer → app, `2` app → computer.
 - `count` starts at 0 per direction and increases by 1 per packet.
-- The receiver MUST drop a packet that fails authentication or whose
-  `count` is not greater than the last accepted one.
+- The receiver MUST drop a packet that fails authentication, whose `count`
+  it accepted already, or 64 or more below the highest it accepted (a small
+  window, not strictly increasing: Wi-Fi reorders).
 - The plaintext body starts with `kind u8`.
 
 ### 3.2 Packet kinds
@@ -169,7 +184,7 @@ datagram  = nonce ‖ ciphertext ‖ tag[16]
 | 2 | KEYFRAME | app → computer | none | 1 |
 | 3 | PING | app → computer | `time i64`, `shown u8` | 10 (9 if `shown` is omitted) |
 | 4 | PONG | computer → app | `pingTime i64`, `computerTime i64` | 17 |
-| 5 | STATS | app → computer | `shown u32`, `lost u32`, then 6 × `u16` in 0.1 ms units: capture→decoded median, p90, max; first packet→decoded median, p90, max | 21 |
+| 5 | STATS | app → computer | `shown u32`, `lost u32`, then 5 stages × (median, p90, max) as `u16` in 0.1 ms units (§3.5) | 39 |
 | 6 | INPUT | app → computer | `fingers u8`, per finger `id u8, x u16, y u16`; `samples u8`, per sample 9 bytes (§3.4) | variable |
 
 The computer MUST ignore unknown kinds and bodies of the wrong size.
@@ -214,7 +229,7 @@ The computer MUST ignore unknown kinds and bodies of the wrong size.
 
 | Offset | Field | Type | Range |
 |---|---|---|---|
-| 0 | bits | u8 | `0x01` tip, `0x02` barrel button, `0x10` in range |
+| 0 | bits | u8 | `0x01` tip, `0x02` barrel button, `0x08` eraser, `0x10` in range |
 | 1 | x | u16 le | 0–32767 |
 | 3 | y | u16 le | 0–32767 |
 | 5 | pressure | u16 le | 0–4096 |
@@ -222,6 +237,24 @@ The computer MUST ignore unknown kinds and bodies of the wrong size.
 | 8 | tilt y | s8 | degrees |
 
 The computer MUST reject an INPUT that is truncated or lists more than 10 fingers.
+
+### 3.5 Latency, stage by stage
+
+The app aligns the clocks with PING/PONG (the offset from the ping with the
+shortest round trip, aged out after 10 s) and sends STATS each second for
+the frames shown in it:
+
+| Stage | From → to | What it shows |
+|---|---|---|
+| 0 | capture → decoded | the whole way (clocks aligned) |
+| 1 | capture → first packet | the computer's capture, encode and send, and the network (clocks aligned) |
+| 2 | first → last packet | the frame spread over the network |
+| 3 | last packet → queued | waiting for a decoder input buffer |
+| 4 | queued → decoded | the decoder |
+
+The computer measures its own: capture → encoded → sent. Together they say
+where each millisecond goes. A computer SHOULD also accept the 21-byte STATS
+of earlier apps (capture→decoded and first packet→decoded, median, p90, max).
 
 ## 4. Cable (Android Open Accessory)
 
@@ -259,6 +292,6 @@ frame = kind u8 ‖ connection u8 ‖ length u32 ‖ data[length]
 
 ## Test vectors
 
-`Tests/ScreenletTests/ScreenletTests.swift` checks the pairing code and
-commitment against values the Android implementation produces,
-plus cable frame parsing across reads.
+`vectors.json`, in every repository, holds the pairing code, the
+commitment, a sealed packet, a cable frame and an INPUT body. Each
+implementation's tests check them.

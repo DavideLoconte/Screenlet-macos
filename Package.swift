@@ -12,6 +12,6 @@ let package = Package(
             name: "Screenlet",
             dependencies: ["Native"],
             swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(name: "ScreenletTests", dependencies: ["Screenlet"], swiftSettings: [.swiftLanguageMode(.v5)]),
+        .testTarget(name: "ScreenletTests", dependencies: ["Screenlet"], resources: [.copy("Resources/vectors.json")], swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )

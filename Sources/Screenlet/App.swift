@@ -32,8 +32,13 @@ final class Model: ObservableObject {
     @Published var resolution = UserDefaults.standard.string(forKey: "resolution") ?? "auto" {
         didSet { UserDefaults.standard.set(resolution, forKey: "resolution") }
     }
-    @Published var fps = UserDefaults.standard.object(forKey: "fps") as? Int ?? 60 {
-        didSet { UserDefaults.standard.set(fps, forKey: "fps") }
+    /// 0: the tablet's refresh rate (up to 120 Hz, as its decoder keeps up).
+    @Published var fps = UserDefaults.standard.object(forKey: "refresh") as? Int ?? 0 {
+        didSet { UserDefaults.standard.set(fps, forKey: "refresh") }
+    }
+    /// Show the desktop by itself when a paired tablet is plugged in.
+    @Published var autoStart = UserDefaults.standard.object(forKey: "autoStart") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoStart, forKey: "autoStart") }
     }
     @Published var mirror = UserDefaults.standard.object(forKey: "mirror") as? Int ?? Int(CGMainDisplayID()) {
         didSet { UserDefaults.standard.set(mirror, forKey: "mirror") }
@@ -65,7 +70,7 @@ final class Model: ObservableObject {
     }
 
     func restoreAdvanced() {
-        fps = 60
+        fps = 0
         codec = "auto"
         kbps = 0
         vbvFrames = 0
@@ -106,11 +111,21 @@ final class Model: ObservableObject {
         state = L("No tablet with Screenlet open")
         browse()
         // There is no notification for the cable, so poll it.
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             let now = self.cable != nil || Cable.present
-            if now != self.plugged { self.plugged = now }
+            if now == self.plugged { return }
+            self.plugged = now
+            // Plugged in: the desktop goes to it by itself, once paired.
+            if now && self.autoStart && self.connection != "wifi" && self.session == nil && !Paired.all().isEmpty {
+                self.showOverCable()
+            }
         }
+    }
+
+    private func showOverCable() {
+        // No announced id here: any paired tablet will do, and TLS proves which.
+        overCable { self.start(L("the tablet on the cable"), [$0.endpoint], expect: nil, cable: $0) }
     }
 
     func show(_ text: String) {
@@ -162,10 +177,7 @@ final class Model: ObservableObject {
         if byCable {
             if !paired.isEmpty {
                 found.append(Action(id: "cable", title: L("Show the desktop over the cable"), device: onCable, detail: cable,
-                                    icon: "cable.connector", short: L("Show the desktop")) {
-                    // No announced id here: any paired tablet will do, and TLS proves which.
-                    self.overCable { self.start(L("the tablet on the cable"), [$0.endpoint], expect: nil, cable: $0) }
-                })
+                                    icon: "cable.connector", short: L("Show the desktop"), run: showOverCable))
             }
             found.append(Action(id: "pair cable", title: L("Pair over the cable…"), device: onCable, detail: cable,
                                 icon: "cable.connector", short: L("Pair…"), primary: paired.isEmpty) {
@@ -464,6 +476,7 @@ struct MainView: View {
                     }
                     Section(L("Settings")) {
                         Toggle(L("Open minimized in the menu bar"), isOn: $model.minimized)
+                        Toggle(L("Show the desktop when the tablet is plugged in"), isOn: $model.autoStart)
                         LabeledContent(L("Permissions")) {
                             Button(L("Review…"), action: permissions)
                         }
@@ -500,6 +513,7 @@ struct AdvancedSections: View {
     var body: some View {
         Section(L("Video")) {
             Picker(selection: $model.fps) {
+                Text(L("The tablet's")).tag(0)
                 Text("60 Hz").tag(60)
                 Text("30 Hz").tag(30)
             } label: {

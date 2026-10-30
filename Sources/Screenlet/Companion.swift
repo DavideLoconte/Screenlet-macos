@@ -142,11 +142,12 @@ enum Paired {
     /// {fingerprint: name}.
     static func all() -> [String: String] { entries().compactMapValues { $0["name"] as? String } }
 
-    static func add(_ fp: String, name: String) {
+    static func add(_ fp: String, name: String, p2p: [String: Any]? = nil) {
         lock.lock()
         defer { lock.unlock() }
         var data = entries()
         data[fp, default: [:]]["name"] = name
+        if let p2p { data[fp]!["p2p"] = p2p }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
         if let json = try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys]) {
@@ -358,6 +359,9 @@ extension Companion {
                 let answer = try link.receive(limit: unpairedHeader, timeout: pairingTimeout + 10)
                 guard accepted, answer["type"] as? String == "pair-ok" else { throw PairingRefused(name: name) }
                 Paired.add(fp, name: name)
+            } else if let p2p = hello["p2p"] as? [String: Any] {
+                // The tablet's own Wi-Fi Direct group, for when there is no network to share.
+                Paired.add(fp, name: name, p2p: p2p)
             }
             return (link, name, fp)
         } catch {

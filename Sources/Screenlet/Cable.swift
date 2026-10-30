@@ -76,6 +76,10 @@ final class Cable {
     }
 
     private func write(_ data: Data, timeout: TimeInterval = 5) throws {
+        try write(NSMutableData(data: data), timeout: timeout)
+    }
+
+    private func write(_ data: NSMutableData, timeout: TimeInterval = 5) throws {
         writing.lock()
         defer { writing.unlock() }
         try accessory.write(data, timeout: timeout)
@@ -214,18 +218,29 @@ final class Cable {
     }
 
     /// Sends one frame's packets in as few USB writes as the app accepts.
+    private let batch = NSMutableData(capacity: Cable.batch)!
+
+    /// From one thread at a time (Streamer's sender): each datagram framed
+    /// straight into one buffer kept for it, written as it fills.
     func send(datagrams: [Data]) throws {
-        var batch = Data(capacity: min(Cable.batch, datagrams.reduce(0) { $0 + $1.count + 6 }))
         do {
             for datagram in datagrams {
-                if batch.count + datagram.count + 6 > Cable.batch {
+                if batch.length > 0 && batch.length + datagram.count + 6 > Cable.batch {
                     try write(batch)
-                    batch.removeAll(keepingCapacity: true)
+                    batch.length = 0
                 }
-                batch.append(Cable.frame(.datagram, 0, datagram))
+                var header: (UInt8, UInt8, UInt32) = (Kind.datagram.rawValue, 0, UInt32(datagram.count).bigEndian)
+                batch.append(&header.0, length: 1)
+                batch.append(&header.1, length: 1)
+                batch.append(&header.2, length: 4)
+                datagram.withUnsafeBytes { batch.append($0.baseAddress!, length: $0.count) }
             }
-            if !batch.isEmpty { try write(batch) }
+            if batch.length > 0 {
+                try write(batch)
+                batch.length = 0
+            }
         } catch {
+            batch.length = 0
             lost(error)
             throw error
         }

@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="Screenlet icon"></p>
+
 # Screenlet for macOS
 
 Use an Android tablet (made for the Samsung Galaxy Tab and its S Pen) as a
@@ -17,10 +19,13 @@ Screenlet started as a fork of
 - **Low latency.** About 19 ms median from capture to decoded over the
   cable, hardware H.264 or HEVC, no jitter buffer.
 - **Extend or mirror.** A new display at the tablet's proportions
-  (automatic, native or another size, 60 or 30 Hz), or one of the Mac's
+  (automatic, native or another size), refreshed as fast as the tablet's
+  panel (up to 120 Hz, as its decoder keeps up), or one of the Mac's
   displays mirrored.
-- **Touch and S Pen.** One finger moves the pointer, a two-finger tap
-  right-clicks, and the pen sends pressure and tilt.
+- **Touch and S Pen.** A finger moves the pointer the moment it lands,
+  clicks when it lifts and drags as soon as it moves; two fingers scroll, a
+  two-finger tap right-clicks; the pen sends proximity, pressure and tilt.
+- **Plug and show.** Plugging a paired tablet in shows the desktop on it.
 - **USB cable or network.** The cable needs no developer options on the
   tablet; over Wi-Fi the tablet is found with Bonjour.
 - **Simple, or as precise as you like.** The window asks for a resolution
@@ -29,6 +34,25 @@ Screenlet started as a fork of
   keyframes one by one, and shows the latency measured live, stage by stage.
 - **Only your tablet.** Paired once by a six-digit code on both screens,
   TLS 1.3 on the link and AES-GCM on every video and input packet.
+
+## Latency
+
+- The hardware encoder with low-latency rate control, speed before quality,
+  no reordering, BT.709 colour declared in the stream (the tablet shows the
+  Mac's colours), Annex B copied once from the encoder's memory.
+- Packets go out from a thread of their own, so a slow USB write never
+  holds the encoder; each frame's datagrams are framed straight into one
+  USB buffer.
+- The Wi-Fi send queue holds about one keyframe, no more; the bitrate
+  starts at half and adapts each second to the delay the tablet measures.
+- No wait on a landing finger: nothing holds a touch to see if a second
+  finger comes.
+
+The log shows, every 2 s with `--show-cable`/`--show-wifi`, the median of
+each stage: encoded and sent here; first packet, spread, decoder wait and
+decode on the tablet ([PROTOCOL.md](PROTOCOL.md) §3.5). `measure` adds the
+fidelity (luma PSNR of the Mac decoding its own stream), and `./bench.sh`
+runs every codec and priority on a test pattern.
 
 ## How it works
 

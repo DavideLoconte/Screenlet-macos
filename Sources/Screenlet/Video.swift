@@ -42,6 +42,8 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
     private var paused = false
     private var done = false
 
+    let fidelity = Fidelity.enabled ? Fidelity() : nil
+
     /// The codecs this Mac encodes in hardware, by their PROTOCOL.md names.
     static let hardwareCodecs: Set<String> = {
         let names: [CMVideoCodecType: String] = [kCMVideoCodecType_H264: "avc", kCMVideoCodecType_HEVC: "hevc"]
@@ -65,23 +67,37 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         self.onError = onError
         super.init()
         let codec = hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
-        // Low-latency rate control where the encoder supports it, the default otherwise.
+        // The hardware encoder with low-latency rate control; without it, the
+        // hardware encoder; the default otherwise.
         var lowLatency = false
-        for spec in [[kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true] as CFDictionary, nil] where session == nil {
+        let specs: [CFDictionary?] = [
+            [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true,
+             kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true] as CFDictionary,
+            [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true] as CFDictionary,
+            nil,
+        ]
+        for (i, spec) in specs.enumerated() where session == nil {
             VTCompressionSessionCreate(allocator: nil, width: Int32(size.0), height: Int32(size.1), codecType: codec,
                                        encoderSpecification: spec, imageBufferAttributes: nil, compressedDataAllocator: nil,
                                        outputCallback: nil, refcon: nil, compressionSessionOut: &session)
-            if session == nil && spec != nil { log("macOS: no low-latency \(hevc ? "HEVC" : "H.264") encoder: the ordinary one") }
-            lowLatency = session != nil && spec != nil
+            lowLatency = session != nil && i == 0
+            if session != nil && i > 0 { log("macOS: no low-latency \(hevc ? "HEVC" : "H.264") encoder: encoder \(i)") }
         }
         guard let session else { return }
         burst = vbvFrames / Double(fps)
         var properties: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: true,
+            kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality: true,
+            kVTCompressionPropertyKey_MaximizePowerEfficiency: false,
             kVTCompressionPropertyKey_AllowFrameReordering: false,
-            kVTCompressionPropertyKey_ProfileLevel: hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel,
+            kVTCompressionPropertyKey_ProfileLevel: hevc ? kVTProfileLevel_HEVC_Main_AutoLevel
+                                                         : kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
             kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * keyframeSeconds,
             kVTCompressionPropertyKey_ExpectedFrameRate: fps,
+            // Said in the stream, so the tablet's decoder does not guess the colours.
+            kVTCompressionPropertyKey_ColorPrimaries: kCVImageBufferColorPrimaries_ITU_R_709_2,
+            kVTCompressionPropertyKey_TransferFunction: kCVImageBufferTransferFunction_ITU_R_709_2,
+            kVTCompressionPropertyKey_YCbCrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_709_2,
         ]
         // The low-latency encoder never holds a frame back and refuses to be told so.
         if !lowLatency { properties[kVTCompressionPropertyKey_MaxFrameDelayCount] = 0 }
@@ -94,10 +110,10 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private var burst = 0.0  // seconds of the average bitrate a keyframe may use
 
-    /// Sets the bitrate in kbit/s, as Streamer adapts it to the network.
+    /// Sets the bitrate in kbit/s, as Streamer adapts it to the network. Not
+    /// under lock: VideoToolbox takes properties while it encodes, and the
+    /// capture queue must not wait for this.
     func rate(_ kbps: Int) {
-        lock.lock()
-        defer { lock.unlock() }
         guard let session else { return }
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: kbps * 1000 as CFNumber)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits,
@@ -164,6 +180,9 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         config.height = size.1
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        // BT.709, as the encoder says in the stream: colours as on the Mac.
+        config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+        config.colorSpaceName = CGColorSpace.sRGB
         config.showsCursor = true
         config.queueDepth = 4  // one is held for the keepalive
         let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: config, delegate: self)
@@ -220,6 +239,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
             guard status == noErr, let sample, let self else { return }
             let (data, keyframe) = Video.annexB(sample, hevc: self.hevc)
             self.onFrame(data, keyframe, captured)
+            self.fidelity?.encoded(sample, from: image)
         }
     }
 
@@ -251,25 +271,38 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         guard let block = CMSampleBufferGetDataBuffer(sample) else { return (out, keyframe) }
         let length = CMBlockBufferGetDataLength(block)
+        out.reserveCapacity(out.count + length + 64)
+        // Straight from the encoder's memory when it is one piece (it is): one copy.
+        var pointer: UnsafeMutablePointer<CChar>?
+        var contiguous = 0
+        if CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: &contiguous, totalLengthOut: nil,
+                                       dataPointerOut: &pointer) == noErr, contiguous == length, let pointer {
+            let raw = UnsafeRawBufferPointer(start: pointer, count: length)
+            return (convert(raw, lengthSize: Int(lengthSize), into: out), keyframe)
+        }
         var data = Data(count: length)
         _ = data.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
-        out.reserveCapacity(out.count + length + 16)
-        return (convert(data, lengthSize: Int(lengthSize), into: out), keyframe)
+        return (data.withUnsafeBytes { convert($0, lengthSize: Int(lengthSize), into: out) }, keyframe)
     }
 
     /// Appends length-prefixed NAL units to out with start codes.
-    static func convert(_ data: Data, lengthSize: Int, into out: Data) -> Data {
+    static func convert(_ data: UnsafeRawBufferPointer, lengthSize: Int, into out: Data) -> Data {
         var out = out
-        var at = data.startIndex
-        while at + lengthSize <= data.endIndex {
+        var at = 0
+        while at + lengthSize <= data.count {
             var n = 0
             for i in 0 ..< lengthSize { n = n << 8 | Int(data[at + i]) }
             at += lengthSize
             out.append(contentsOf: [0, 0, 0, 1])
-            out.append(data[at ..< min(at + n, data.endIndex)])
-            at += n
+            let end = min(at + n, data.count)
+            out.append(data.baseAddress!.advanced(by: at).assumingMemoryBound(to: UInt8.self), count: end - at)
+            at = end
         }
         return out
+    }
+
+    static func convert(_ data: Data, lengthSize: Int, into out: Data) -> Data {
+        data.withUnsafeBytes { convert($0, lengthSize: lengthSize, into: out) }
     }
 
     func keyframe() {

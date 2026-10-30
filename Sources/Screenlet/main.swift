@@ -6,8 +6,10 @@ if arguments.count >= 2, ["--show-cable", "--show-wifi"].contains(arguments[1]) 
     // A test from the terminal. Shows the desktop on the tablet for a number
     // of seconds, over the cable or over Wi-Fi to the first paired tablet
     // found, and logs the latency every 2 s. Options: "mirror" (the main
-    // display), "hevc", a priority, "30" (Hz), "native", a resolution, or "pattern"
-    // (a moving test pattern on the tablet's display, the same load every run).
+    // display), "hevc" or "h264", a priority, "30" or "60" (Hz; the tablet's
+    // otherwise), "native", a resolution, "pattern" (a moving test pattern on
+    // the tablet's display, the same load every run) or "measure" (fidelity:
+    // the Mac decodes its own stream and logs its PSNR). bench.sh runs them.
     let seconds = arguments.count > 2 ? Double(arguments[2]) ?? 20 : 20
     var mode = DisplaySession.Mode()
     var pattern = false
@@ -15,6 +17,9 @@ if arguments.count >= 2, ["--show-cable", "--show-wifi"].contains(arguments[1]) 
         switch word {
         case "mirror": mode.mirror = CGMainDisplayID()
         case "hevc": mode.codec = "hevc"
+        case "h264": mode.codec = "avc"
+        case "60": mode.fps = 60
+        case "measure": Fidelity.enabled = true
         case "latency", "balanced", "clarity": mode.priority = word
         case "30": mode.fps = 30
         case "native": mode.resolution = "tablet"
