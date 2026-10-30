@@ -1,41 +1,54 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7B61FF"/>
-      <stop offset="1" stop-color="#3A1FB8"/>
+    <linearGradient id="monitorScreen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1c71d8"/>
     </linearGradient>
-    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.06"/>
+    <linearGradient id="tabletScreen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#99c1f1"/>
+      <stop offset="0.55" stop-color="#7a6ff0"/>
+      <stop offset="1" stop-color="#9141ac"/>
     </linearGradient>
-    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#5EE7DF"/>
-      <stop offset="1" stop-color="#4A6CF7"/>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d3846"/>
+      <stop offset="1" stop-color="#241f31"/>
     </linearGradient>
-    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#E6E3F5"/>
+    <linearGradient id="pen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#c0bfbc"/>
     </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#14063F" flood-opacity="0.45"/>
-    </filter>
-    <filter id="iconshadow" x="-10%" y="-10%" width="120%" height="125%">
-      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
-    </filter>
   </defs>
-  <!-- macOS grid: an 824 px rounded square, centred, with its own shadow. -->
-  <g filter="url(#iconshadow)">
-    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+
+  <!-- PC monitor, behind -->
+  <rect x="38" y="104" width="22" height="6" rx="2" fill="#77767b"/>
+  <rect x="44" y="90" width="10" height="16" fill="#9a9996"/>
+  <rect x="6" y="20" width="86" height="72" rx="8" fill="url(#bezel)"/>
+  <rect x="11" y="25" width="76" height="58" rx="4" fill="url(#monitorScreen)"/>
+  <rect x="17" y="31" width="30" height="20" rx="3" fill="#ffffff" opacity="0.9"/>
+  <rect x="17" y="31" width="30" height="5" rx="2" fill="#deddda"/>
+
+
+  <!-- Tablet, in front -->
+  <rect x="40" y="50" width="84" height="60" rx="9" fill="#000000" opacity="0.18" transform="translate(1 3)"/>
+  <rect x="40" y="50" width="84" height="60" rx="9" fill="url(#bezel)"/>
+  <rect x="45" y="55" width="74" height="50" rx="5" fill="url(#tabletScreen)"/>
+  <rect x="52" y="62" width="34" height="24" rx="3" fill="#ffffff" opacity="0.92"/>
+  <rect x="52" y="62" width="34" height="6" rx="2" fill="#deddda"/>
+  <rect x="91" y="70" width="22" height="16" rx="3" fill="#ffffff" opacity="0.55"/>
+  <path d="M56 94 q10 -10 20 0 t20 0" stroke="#ffffff" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- S Pen -->
+  <g transform="rotate(-40 100 104)">
+    <rect x="78" y="100" width="44" height="8" rx="4" fill="url(#pen)"/>
+    <rect x="100" y="100" width="4" height="8" fill="#9a9996"/>
+    <path d="M78 100 l-8 4 l8 4 z" fill="#5e5c64"/>
   </g>
-  <!-- The computer's display, behind: frosted glass. -->
-  <rect x="200" y="262" width="470" height="320" rx="34" fill="url(#glass)" stroke="#FFFFFF" stroke-opacity="0.85" stroke-width="22"/>
-  <rect x="380" y="582" width="110" height="52" fill="#FFFFFF" fill-opacity="0.55"/>
-  <rect x="320" y="628" width="230" height="24" rx="12" fill="#FFFFFF" fill-opacity="0.7"/>
-  <!-- The screenlet: the tablet in front, its own small screen. -->
-  <g filter="url(#shadow)">
-    <rect x="470" y="430" width="370" height="268" rx="40" fill="url(#body)"/>
-    <rect x="496" y="456" width="318" height="216" rx="20" fill="url(#screen)"/>
-    <!-- A pen stroke on it. -->
-    <path d="M532 628 C 570 560, 610 560, 630 600 S 700 640, 772 520" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round"/>
-  </g>
+
+  <!-- "+1" badge -->
+  <circle cx="106" cy="28" r="19" fill="#000000" opacity="0.15" transform="translate(0 2)"/>
+  <circle cx="106" cy="28" r="19" fill="#2ec27e"/>
+  <circle cx="106" cy="28" r="19" fill="none" stroke="#26a269" stroke-width="2"/>
+  <rect x="91" y="26" width="14" height="4.5" rx="2" fill="#ffffff"/>
+  <rect x="95.75" y="21.25" width="4.5" height="14" rx="2" fill="#ffffff"/>
+  <path d="M110 22 l4.5 -3.5 h1.5 v19.5 h-4.5 v-13 l-1.5 1.2 z" fill="#ffffff"/>
 </svg>

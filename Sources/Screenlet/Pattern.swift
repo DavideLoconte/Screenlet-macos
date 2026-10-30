@@ -1,6 +1,6 @@
 import AppKit
 
-/// A repeatable test pattern for measuring latency and fidelity: scrolling
+/// A repeatable test pattern for measuring latency (--show-cable … pattern): scrolling
 /// text, a panning photo, a plasma and a moving square, at 60 Hz.
 final class Pattern: NSView {
     private var offset = 0.0

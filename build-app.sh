@@ -29,7 +29,7 @@ cat > "$app/Contents/Info.plist" <<EOF
 <dict>
     <key>CFBundleName</key><string>Screenlet</string>
     <key>CFBundleDisplayName</key><string>Screenlet</string>
-    <key>CFBundleIdentifier</key><string>io.github.davideloconte.Screenlet</string>
+    <key>CFBundleIdentifier</key><string>com.davideloconte.screenlet</string>
     <key>CFBundleVersion</key><string>$version</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -78,7 +78,7 @@ rm -rf "$iconset" dist/icon.swift
 # build and makes macOS ask for Screen Recording and Accessibility again.
 # Requiring only the identifier keeps the permissions, though any app with
 # this identifier would get them. A Developer ID signature fixes that.
-codesign --force --sign - --requirements "=designated => identifier \"io.github.davideloconte.Screenlet\"" "$app"
+codesign --force --sign - --requirements "=designated => identifier \"com.davideloconte.screenlet\"" "$app"
 zip="dist/Screenlet-$version-macos.zip"
 rm -f "$zip"
 ditto -c -k --keepParent "$app" "$zip"
@@ -91,17 +91,17 @@ cask "screenlet" do
 
   url "${CASK_URL:-file://$PWD/$zip}"
   name "Screenlet"
-  desc "Android tablet as a low-latency second screen, over USB or Wi-Fi"
-  homepage "https://github.com/DavideLoconte/Screenlet-macos"
+  desc "Galaxy Tab as a second monitor, over Wi-Fi or the USB cable"
+  homepage "https://github.com/DavideLoconte/Screenlet-macOS"
 
   depends_on macos: ">= :sequoia"
 
   app "Screenlet.app"
 
   zap trash: [
-    "~/Library/Application Support/Screenlet",
+    "~/.config/screenlet",
     "~/Library/Logs/Screenlet.log",
-    "~/Library/Preferences/io.github.davideloconte.Screenlet.plist",
+    "~/Library/Preferences/com.davideloconte.screenlet.plist",
   ]
 end
 EOF

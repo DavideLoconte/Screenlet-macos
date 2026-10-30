@@ -26,12 +26,12 @@
 @property (readonly) CGDirectDisplayID displayID;
 @end
 
-@implementation ScreenletVirtualDisplay {
+@implementation POVirtualDisplay {
     CGVirtualDisplay *_display;  // released with this object, removing the display
 }
 
-- (instancetype)initWithPixels:(CGSize)pixels points:(CGSize)points refreshRate:(double)refreshRate
-                          name:(NSString *)name vendor:(uint32_t)vendor product:(uint32_t)product {
+- (instancetype)initWithPixels:(CGSize)pixels points:(CGSize)points name:(NSString *)name
+                        vendor:(uint32_t)vendor product:(uint32_t)product {
     if (!(self = [super init])) return nil;
     CGVirtualDisplayDescriptor *descriptor = [[CGVirtualDisplayDescriptor alloc] init];
     descriptor.queue = dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0);
@@ -51,15 +51,8 @@
     if (!_display) return nil;
     CGVirtualDisplaySettings *settings = [[CGVirtualDisplaySettings alloc] init];
     settings.hiDPI = points.width < pixels.width ? 1 : 0;
-    // The tablet's refresh rate (and 60 as a fallback mode): WindowServer
-    // composes the display that often, so a change waits less to be captured.
-    NSMutableArray *modes = [NSMutableArray arrayWithObject:[[CGVirtualDisplayMode alloc]
-        initWithWidth:(NSUInteger)points.width height:(NSUInteger)points.height refreshRate:refreshRate]];
-    if (refreshRate != 60) {
-        [modes addObject:[[CGVirtualDisplayMode alloc] initWithWidth:(NSUInteger)points.width
-                                                              height:(NSUInteger)points.height refreshRate:60]];
-    }
-    settings.modes = modes;
+    settings.modes = @[[[CGVirtualDisplayMode alloc] initWithWidth:(NSUInteger)points.width
+                                                            height:(NSUInteger)points.height refreshRate:60]];
     if (![_display applySettings:settings]) return nil;
     return self;
 }

@@ -1,7 +1,7 @@
 #import "Native.h"
 #import <IOUSBHost/IOUSBHost.h>
 
-static const uint16_t kGoogle = 0x18D1;
+static const uint16_t kGoogle = 0x18D1, kSamsung = 0x04E8;
 static const uint8_t kGetProtocol = 51, kSendString = 52, kStart = 53;
 static const NSTimeInterval kSwitchWait = 10;  // seconds for the tablet to come back as an accessory
 
@@ -28,25 +28,9 @@ static io_service_t AccessoryInterface(void) {
         ?: First("IOUSBHostInterface", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D00, @"bInterfaceNumber": @0});
 }
 
-// Android tablets' makers: Samsung, Google, Lenovo, Xiaomi, OnePlus, Motorola,
-// Huawei, OPPO/realme, Honor, Amazon, Asus, Sony, TCL, Nothing.
-static const uint16_t kAndroidVendors[] = {0x04E8, 0x18D1, 0x17EF, 0x2717, 0x2A70, 0x22B8, 0x12D1, 0x22D9,
-                                           0x339B, 0x1949, 0x0B05, 0x0FCE, 0x1BBB, 0x2B0E};
-
-/// A device of one of those makers, not one already in accessory mode
-/// (Google's 0x2D00-0x2D05, which AccessoryDevice finds).
-static io_service_t AndroidDevice(void) {
-    for (size_t i = 0; i < sizeof kAndroidVendors / sizeof kAndroidVendors[0]; i++) {
-        io_service_t found = First("IOUSBHostDevice", @{@"idVendor": @(kAndroidVendors[i])});
-        if (!found) continue;
-        NSNumber *product = CFBridgingRelease(IORegistryEntryCreateCFProperty(found, CFSTR("idProduct"), kCFAllocatorDefault, 0));
-        if (kAndroidVendors[i] == kGoogle && product.unsignedIntValue >= 0x2D00 && product.unsignedIntValue <= 0x2D05) {
-            IOObjectRelease(found);
-            continue;
-        }
-        return found;
-    }
-    return 0;
+// Samsung's vendor ID only. Other makers can be added when needed.
+static io_service_t SamsungDevice(void) {
+    return First("IOUSBHostDevice", @{@"idVendor": @(kSamsung)});
 }
 
 static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index, uint16_t length) {
@@ -54,14 +38,14 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
     return r;
 }
 
-@implementation ScreenletAccessory {
+@implementation POAccessory {
     IOUSBHostInterface *_interface;
     IOUSBHostPipe *_in, *_out;
     NSUInteger _packet;
 }
 
 + (BOOL)tabletPresent {
-    io_service_t found = AccessoryDevice() ?: AndroidDevice();
+    io_service_t found = AccessoryDevice() ?: SamsungDevice();
     if (found) IOObjectRelease(found);
     return found != 0;
 }
@@ -84,9 +68,9 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
         for (int tries = 0; tries < 50 && !device; tries++) {
             [NSThread sleepForTimeInterval:0.1];
             if (tries >= 5 && (device = AccessoryDevice())) break;
-            io_service_t android = tries >= 5 ? AndroidDevice() : 0;
-            if (android) {
-                IOObjectRelease(android);
+            io_service_t samsung = tries >= 5 ? SamsungDevice() : 0;
+            if (samsung) {
+                IOObjectRelease(samsung);
                 break;
             }
         }
@@ -98,7 +82,7 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
 
 /// Asks the tablet to switch to accessory mode and waits for it to reappear.
 - (BOOL)switchTablet:(NSArray<NSString *> *)identity error:(NSError **)error {
-    io_service_t service = AndroidDevice();
+    io_service_t service = SamsungDevice();
     if (!service) {
         if (error) *error = Error(@"no tablet on the cable");
         return NO;
@@ -206,8 +190,9 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
     return -1;
 }
 
-- (BOOL)write:(NSMutableData *)data timeout:(NSTimeInterval)timeout error:(NSError **)error {
-    if (![_out sendIORequestWithData:data bytesTransferred:nil completionTimeout:timeout error:error]) return NO;
+- (BOOL)write:(NSData *)data timeout:(NSTimeInterval)timeout error:(NSError **)error {
+    NSMutableData *copy = [data mutableCopy];
+    if (![_out sendIORequestWithData:copy bytesTransferred:nil completionTimeout:timeout error:error]) return NO;
     // A transfer ends on a short packet, so one that ends on a full packet needs an empty one.
     if (_packet && data.length % _packet == 0) {
         return [_out sendIORequestWithData:nil bytesTransferred:nil completionTimeout:timeout error:error];

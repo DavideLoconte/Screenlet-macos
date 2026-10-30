@@ -6,21 +6,24 @@ import Security
 /// The companion protocol (PROTOCOL.md): TLS 1.3 with a self-signed
 /// certificate on each side, length-framed JSON messages, and pairing by a
 /// six-digit code shown on both screens. The identity and paired tablets
-/// are kept in ~/Library/Application Support/Screenlet.
+/// are stored in ~/.config/screenlet/companion.
 enum Companion {
     static let protocolVersion = 1
-    static let appPort: UInt16 = 47237
+    static let appPort: UInt16 = 47236
     static let connectTimeout = 5
     static let pairingTimeout: TimeInterval = 120
     static let ioTimeout: TimeInterval = 30
     static let handshakeFor: TimeInterval = 20
     static let linkTimeout = 20       // seconds a session's link waits for the tablet to answer
     static let unpairedHeader = 4096
-    static let maxHeader = 64 * 1024
+    static let maxHeader = 16 * 1024 * 1024
     static let maxName = 64
 
-    static let config = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Screenlet")
+    static let config: URL = {
+        let base = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config")
+        return base.appendingPathComponent("screenlet/companion")
+    }()
 
     static func sha256(_ parts: Data...) -> Data {
         var hash = SHA256()
@@ -74,7 +77,8 @@ final class Identity {
         let fm = FileManager.default
         if !(fm.fileExists(atPath: cert.path) && fm.fileExists(atPath: key.path)) {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try Identity.openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+            try Identity.openssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                                  "-pkeyopt", "ec_param_enc:named_curve", "-nodes",  // LibreSSL spells the curve out otherwise, which Security rejects
                                   "-keyout", key.path + ".part", "-out", cert.path + ".part", "-days", "10950",
                                   "-subj", "/CN=Screenlet on \(Host.current().localizedName ?? "a Mac")"])
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: key.path + ".part")
@@ -138,12 +142,11 @@ enum Paired {
     /// {fingerprint: name}.
     static func all() -> [String: String] { entries().compactMapValues { $0["name"] as? String } }
 
-    static func add(_ fp: String, name: String, p2p: [String: Any]? = nil) {
+    static func add(_ fp: String, name: String) {
         lock.lock()
         defer { lock.unlock() }
         var data = entries()
         data[fp, default: [:]]["name"] = name
-        if let p2p { data[fp]!["p2p"] = p2p }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
         if let json = try? JSONSerialization.data(withJSONObject: data, options: [.sortedKeys]) {
@@ -355,9 +358,6 @@ extension Companion {
                 let answer = try link.receive(limit: unpairedHeader, timeout: pairingTimeout + 10)
                 guard accepted, answer["type"] as? String == "pair-ok" else { throw PairingRefused(name: name) }
                 Paired.add(fp, name: name)
-            } else if let p2p = hello["p2p"] as? [String: Any] {
-                // The tablet's own Wi-Fi Direct group, for when there is no network to share.
-                Paired.add(fp, name: name, p2p: p2p)
             }
             return (link, name, fp)
         } catch {

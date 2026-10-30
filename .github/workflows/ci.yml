@@ -40,4 +40,4 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/Screenlet-*-macos.zip dist/screenlet.rb --title "Screenlet for macOS ${GITHUB_REF_NAME}" --notes "Signed ad hoc, not with a Developer ID. The README says how to open it the first time."
+        run: gh release create "${GITHUB_REF_NAME}" dist/Screenlet-*-macos.zip dist/screenlet.rb --title "Screenlet ${GITHUB_REF_NAME}" --notes "A proof of concept. See the README for installing it."

@@ -9,14 +9,14 @@ import Network
 /// stream, one frame per write.
 final class Cable {
     enum Kind: UInt8 { case hello = 0, open, data, close, datagram }
-    static let identity = ["Screenlet", "Screenlet", "Screenlet on the computer", "1",
-                           "https://github.com/DavideLoconte/Screenlet-companion", ""]
+    static let identity = ["Screenlet", "Screenlet", "Screenlet on the Mac", "1",
+                           "https://github.com/DavideLoconte/Screenlet-Companion", ""]
     static let chunk = 16384          // bytes per read in either direction, as the app transfers
     static let batch = 48 * 1024      // bytes of datagrams in one USB write, at most
     static let answerWait: TimeInterval = 300  // for the user to allow the accessory the first time
     static let maxFrame = 1 << 20     // bytes; a longer frame means a broken or hostile tablet
 
-    private let accessory: ScreenletAccessory
+    private let accessory: POAccessory
     private let writing = NSLock()
     private var listener: Int32 = -1
     private(set) var endpoint: NWEndpoint!   // where companion links connect
@@ -25,16 +25,19 @@ final class Cable {
     private var next: UInt8 = 0
     private var running = true
     private var buffer = Data()
-    private let out = DispatchQueue(label: "screenlet.cable.out")  // writes to the loopback sockets, in order
+    /// Writes to and closes the loopback sockets, in order: a socket closes only
+    /// after the writes queued for it, so its number is not reused under them.
+    private let out = DispatchQueue(label: "screenlet.cable.out")
+    private let pending = DispatchSemaphore(value: 64)  // frames queued on out; more stalls the reads, as backpressure
     /// Display datagrams from the tablet.
     var onDatagram: ((Data) -> Void)?
     var onLost: ((Error) -> Void)?
 
-    static var present: Bool { ScreenletAccessory.tabletPresent() }
+    static var present: Bool { POAccessory.tabletPresent() }
 
     /// Switches the tablet to accessory mode and waits for the app to answer. Blocks.
     init() throws {
-        accessory = try ScreenletAccessory(identity: Cable.identity)
+        accessory = try POAccessory(identity: Cable.identity)
         do {
             try hello()
             try listen()
@@ -73,10 +76,6 @@ final class Cable {
     }
 
     private func write(_ data: Data, timeout: TimeInterval = 5) throws {
-        try write(NSMutableData(data: data), timeout: timeout)
-    }
-
-    private func write(_ data: NSMutableData, timeout: TimeInterval = 5) throws {
         writing.lock()
         defer { writing.unlock() }
         try accessory.write(data, timeout: timeout)
@@ -159,7 +158,7 @@ final class Cable {
         if mine { connections[number] = nil }
         lock.unlock()
         if mine { try? write(Cable.frame(.close, number)) }
-        Darwin.close(conn)
+        out.async { Darwin.close(conn) }
     }
 
     private func fromTablet() {
@@ -177,7 +176,9 @@ final class Cable {
                 switch kind {
                 case .data:
                     guard let conn else { continue }
+                    pending.wait()
                     out.async { [self] in
+                        defer { pending.signal() }
                         let sent = data.withUnsafeBytes { raw -> Bool in
                             var at = 0
                             while at < raw.count {
@@ -212,30 +213,19 @@ final class Cable {
         if mine { shutdown(conn, SHUT_RDWR) }  // toTablet's recv ends and closes it
     }
 
-    private let batch = NSMutableData(capacity: Cable.batch)!
-
-    /// Sends one frame's packets in as few USB writes as the app accepts, each
-    /// framed straight into one buffer kept for it. From one thread at a time
-    /// (Streamer's sender).
+    /// Sends one frame's packets in as few USB writes as the app accepts.
     func send(datagrams: [Data]) throws {
+        var batch = Data(capacity: min(Cable.batch, datagrams.reduce(0) { $0 + $1.count + 6 }))
         do {
             for datagram in datagrams {
-                if batch.length + datagram.count + 6 > Cable.batch {
+                if batch.count + datagram.count + 6 > Cable.batch {
                     try write(batch)
-                    batch.length = 0
+                    batch.removeAll(keepingCapacity: true)
                 }
-                var header: (UInt8, UInt8, UInt32) = (Kind.datagram.rawValue, 0, UInt32(datagram.count).bigEndian)
-                batch.append(&header.0, length: 1)
-                batch.append(&header.1, length: 1)
-                batch.append(&header.2, length: 4)
-                datagram.withUnsafeBytes { batch.append($0.baseAddress!, length: $0.count) }
+                batch.append(Cable.frame(.datagram, 0, datagram))
             }
-            if batch.length > 0 {
-                try write(batch)
-                batch.length = 0
-            }
+            if !batch.isEmpty { try write(batch) }
         } catch {
-            batch.length = 0
             lost(error)
             throw error
         }
@@ -255,7 +245,7 @@ final class Cable {
         let all = connections.values
         connections.removeAll()
         lock.unlock()
-        all.forEach { Darwin.close($0) }
+        all.forEach { shutdown($0, SHUT_RDWR) }  // unblocks out and toTablet, which closes them
         Darwin.close(listener)
         accessory.close()
     }

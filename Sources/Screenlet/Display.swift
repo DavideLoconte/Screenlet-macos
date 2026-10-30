@@ -12,8 +12,11 @@ enum Packet {
     static let nonceSize = 12, tagSize = 16, videoHeader = 18
     /// Video bytes per packet, so that with header, nonce and tag it fits one Ethernet frame.
     static let payload = 1472 - videoHeader - nonceSize - tagSize
-    static let stages = 5
-    static let statsSize = 1 + 4 + 4 + stages * 3 * 2
+    /// Few large packets, as each costs the app a decryption (some 0.2 ms on a slow
+    /// tablet): the cable has no MTU, and over Wi-Fi IP fragments them, which loses
+    /// no more frames than small packets, as a packet lost loses its frame either way.
+    static let largePayload = 16384 - videoHeader - nonceSize - tagSize
+    static let statsSize = 1 + 4 + 4 + 6 * 2
 }
 
 extension Data {
@@ -109,7 +112,7 @@ final class Channel {
     private let key: SymmetricKey
     private let lock = NSLock()
     private var sent: UInt64 = 0
-    private var replay = Replay()
+    private var heard: Int64 = -1
     private var socket: Int32 = -1
     private var app = sockaddr_in()
     private let cable: Cable?
@@ -126,10 +129,11 @@ final class Channel {
             return
         }
         socket = Darwin.socket(AF_INET, SOCK_DGRAM, 0)
-        // Room for a keyframe at the highest bitrate, not much more: a deeper
-        // queue only makes the next frames later when the network slows.
-        var size: Int32 = 1 << 20
+        var size: Int32 = 4 << 20  // room for a whole keyframe
         setsockopt(socket, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout<Int32>.size))
+        // Interactive video: macOS marks the packets (DSCP) and Wi-Fi sends them in its video queue (WMM).
+        var service = NET_SERVICE_TYPE_VI
+        setsockopt(socket, SOL_SOCKET, SO_NET_SERVICE_TYPE, &service, socklen_t(MemoryLayout<Int32>.size))
         var address = sockaddr_in(sin_len: UInt8(MemoryLayout<sockaddr_in>.size), sin_family: sa_family_t(AF_INET),
                                   sin_port: 0, sin_addr: in_addr(s_addr: INADDR_ANY), sin_zero: (0, 0, 0, 0, 0, 0, 0, 0))
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
@@ -155,12 +159,16 @@ final class Channel {
         return Channel.seal(body, key: key, direction: Packet.fromPC, count: count)
     }
 
-    static func seal<Body: DataProtocol>(_ body: Body, key: SymmetricKey, direction: UInt32, count: UInt64) -> Data {
+    static func seal(_ body: Data, key: SymmetricKey, direction: UInt32, count: UInt64) -> Data {
         var nonce = Data(capacity: Packet.nonceSize)
         nonce.append(big: direction)
         nonce.append(big: count)
-        // CryptoKit's combined form is the packet: nonce, ciphertext, tag.
-        return try! AES.GCM.seal(body, using: key, nonce: try! AES.GCM.Nonce(data: nonce)).combined!
+        let box = try! AES.GCM.seal(body, using: key, nonce: try! AES.GCM.Nonce(data: nonce))
+        var packet = nonce
+        packet.reserveCapacity(Packet.nonceSize + body.count + Packet.tagSize)
+        packet.append(box.ciphertext)
+        packet.append(box.tag)
+        return packet
     }
 
     /// Seals and sends bodies together, so a frame's packets take one USB write.
@@ -197,17 +205,16 @@ final class Channel {
     func received(_ packet: Data) {
         guard packet.count >= Packet.nonceSize + Packet.tagSize + 1,
               packet.big(UInt32.self, at: 0) == Packet.fromApp else { return }
-        let count = packet.big(UInt64.self, at: 4)
+        let count = Int64(bitPattern: packet.big(UInt64.self, at: 4))
         lock.lock()
-        let fresh = replay.fresh(count)
+        let fresh = count > heard
         lock.unlock()
         guard fresh, let nonce = try? AES.GCM.Nonce(data: packet.prefix(Packet.nonceSize)),
               let box = try? AES.GCM.SealedBox(nonce: nonce, ciphertext: packet.dropFirst(Packet.nonceSize).dropLast(Packet.tagSize),
                                                tag: packet.suffix(Packet.tagSize)),
               let body = try? AES.GCM.open(box, using: key) else { return }  // not sealed with this session's key
         lock.lock()
-        guard replay.fresh(count) else { lock.unlock(); return }
-        replay.accept(count)
+        heard = max(heard, count)
         inbox.append(body)
         lock.unlock()
         arrived.signal()
@@ -228,30 +235,6 @@ final class Channel {
     }
 }
 
-/// The counts accepted from the app: the highest and a window of 64 below
-/// it, so a packet Wi-Fi delivered late is taken once, a replay never.
-struct Replay {
-    private var highest: UInt64?
-    private var window: UInt64 = 0  // bit i: highest - i was accepted
-
-    func fresh(_ count: UInt64) -> Bool {
-        guard let highest else { return true }
-        if count > highest { return true }
-        let behind = highest - count
-        return behind < 64 && window & (1 << behind) == 0
-    }
-
-    mutating func accept(_ count: UInt64) {
-        guard let top = highest, count <= top else {
-            let shift = highest.map { count - $0 } ?? 64
-            window = shift >= 64 ? 1 : window << shift | 1
-            highest = count
-            return
-        }
-        window |= 1 << (top - count)
-    }
-}
-
 /// Sends the encoded display to the app and handles its input and reports.
 final class Streamer {
     static let minKeyframeGap: TimeInterval = 0.25  // the app keeps asking until one arrives
@@ -263,16 +246,13 @@ final class Streamer {
     private let input: Input?
     private var frame: UInt32 = 0
     private var lastKeyframe = Date.distantPast
-    private var encoded: [Double] = []   // ms from capture to encoded since the last report
-    private var sent: [Double] = []      // ms from capture to sent
-    /// Packets go out from here, never from VideoToolbox's thread: a slow USB
-    /// write must not hold the encoder's next frame.
-    private let sender = DispatchQueue(label: "screenlet.send", qos: .userInteractive)
+    private var encoded: [Double] = []   // ms from capture to sent since the last report
     private var bytes = 0                // of video since the last report
     // The bitrate adapts like a TCP window: down a third when frames arrive
     // late or are lost, up a tenth while they arrive on time, capped at the
     // priority's bitrate.
     static let minKbps = 2000
+    static let startKbps = 8000   // Wi-Fi starts here and ramps up, so the start does not fill queues
     static let late = 90.0        // a median above this many ms is late, whatever the link's best
     private let target: Int
     private var bitrate: Int
@@ -284,22 +264,41 @@ final class Streamer {
     private var running = true
     private var shown = true
     private var reports = 0
+    private var payload: Int  // video bytes per packet; under lock
+    private let fallback: Bool  // to small packets, if large ones do not arrive
     var onPaused: ((Bool) -> Void)?
+    var onStats: ((Stats) -> Void)?
 
+    /// One report from the app, for the window's statistics.
+    struct Stats {
+        let fps: Int, lost: Int
+        let latency: Double, latency90: Double   // ms from capture to decoded
+        let sending: Double?                     // ms from capture to sent
+        let decoding: Double                     // ms from the first packet to decoded
+        let kbps: Int, cap: Int
+    }
+
+    /// packets: "small" (one Ethernet frame each), "large", or "auto" (large,
+    /// small if no frame arrives in large ones over Wi-Fi).
     init(channel: Channel, display: CGDirectDisplayID, size: (Int, Int), fps: Int, bitrate: Int, vbvFrames: Double,
-         hevc: Bool, wifi: Bool, input: Input?, onError: @escaping (String) -> Void) {
+         hevc: Bool, keyframeSeconds: Int, packets: String, wifi: Bool, input: Input?, onError: @escaping (String) -> Void) {
         self.channel = channel
         self.input = input
+        payload = packets == "small" ? Packet.payload : Packet.largePayload
+        fallback = wifi && packets == "auto"
         target = bitrate
-        // Wi-Fi starts at half and ramps up, so the start does not fill queues.
-        let bitrate = wifi ? max(Streamer.minKbps, bitrate / 2) : bitrate
+        let bitrate = wifi ? min(bitrate, Streamer.startKbps) : bitrate
         self.bitrate = bitrate
         video = Video(display: display, size: size, fps: fps, bitrate: bitrate, vbvFrames: vbvFrames, hevc: hevc,
-                      onFrame: { [weak self] in self?.send($0, keyframe: $1, captured: $2) }, onError: onError)
+                      keyframeSeconds: keyframeSeconds, onFrame: { [weak self] in self?.send($0, keyframe: $1, captured: $2) }, onError: onError)
         log("app display: \(size.0)x\(size.1)@\(fps) \(hevc ? "HEVC" : "H.264") \(bitrate) kbit/s")
     }
 
     func start() {
+        // A menu bar app is never in front: without this, macOS naps it and
+        // coalesces its timers, and frames and touches wait.
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical],
+                                                         reason: "Showing the desktop on the tablet")
         video.start()
         Thread.detachNewThread { [self] in listen() }
     }
@@ -308,44 +307,45 @@ final class Streamer {
         running = false
         input?.close()
         video.stop()
+        activity.map(ProcessInfo.processInfo.endActivity)
+        activity = nil
     }
 
-    /// Called on the encoder's thread with one Annex B frame: on its way at once.
+    private var activity: NSObjectProtocol?
+
+    /// Called on the encoder's thread with one Annex B frame, sent at once.
     private func send(_ data: Data, keyframe: Bool, captured: Int64) {
-        let encodedAt = nowNanos()
-        sender.async { [self] in
-            frame &+= 1
-            let count = (data.count + Packet.payload - 1) / Packet.payload
-            var bodies: [Data] = []
-            bodies.reserveCapacity(count)
-            for index in 0 ..< count {
-                var body = Data(capacity: Packet.videoHeader + Packet.payload)
-                body.append(Packet.video)
-                body.append(keyframe ? 1 : 0)
-                body.append(big: frame)
-                body.append(big: UInt16(index))
-                body.append(big: UInt16(count))
-                body.append(big: captured)
-                let from = data.startIndex + index * Packet.payload
-                body.append(data[from ..< min(from + Packet.payload, data.endIndex)])
-                bodies.append(body)
-            }
-            channel.send(bodies)
-            let now = nowNanos()
-            lock.lock()
-            encoded.append(Double(encodedAt - captured) / 1e6)
-            sent.append(Double(now - captured) / 1e6)
-            bytes += data.count
-            lock.unlock()
+        lock.lock()
+        let payload = self.payload
+        lock.unlock()
+        frame &+= 1
+        let count = (data.count + payload - 1) / payload
+        var bodies: [Data] = []
+        bodies.reserveCapacity(count)
+        for index in 0 ..< count {
+            var body = Data(capacity: Packet.videoHeader + payload)
+            body.append(Packet.video)
+            body.append(keyframe ? 1 : 0)
+            body.append(big: frame)
+            body.append(big: UInt16(index))
+            body.append(big: UInt16(count))
+            body.append(big: captured)
+            let from = data.startIndex + index * payload
+            body.append(data[from ..< min(from + payload, data.endIndex)])
+            bodies.append(body)
         }
+        channel.send(bodies)
+        lock.lock()
+        encoded.append(Double(nowNanos() - captured) / 1e6)
+        bytes += data.count
+        lock.unlock()
     }
 
     private func listen() {
         while running {
-            // Input.check() every 5 ms while something is touching (a finger
-            // held still is pressed after a moment), rarely otherwise.
+            // Input.check() every 20 ms while something is touching, rarely otherwise.
             let busy = input?.busy ?? false
-            let body = channel.receive(timeout: busy ? 0.005 : Streamer.idleWait)
+            let body = channel.receive(timeout: busy ? 0.02 : Streamer.idleWait)
             input?.check()
             guard let body, let kind = body.first else { continue }
             switch kind {
@@ -358,7 +358,7 @@ final class Streamer {
                 var pong = Data([Packet.pong])
                 pong.append(big: body.big(Int64.self, at: 1))
                 pong.append(big: nowNanos())
-                sender.async { [channel] in channel.send([pong]) }
+                channel.send([pong])
                 if body.count == 10 { visible(body[body.startIndex + 9] != 0) }
             case Packet.stats where body.count == Packet.statsSize:
                 stats(body)
@@ -368,36 +368,34 @@ final class Streamer {
         }
     }
 
-    /// The app's measures (PROTOCOL.md §3.5), five stages × median, 90th
-    /// percentile and highest, with this Mac's own: capture to encoded, to sent.
-    static func stages(_ body: Data) -> [[Double]] {
-        (0 ..< Packet.stages).map { stage in (0 ..< 3).map { Double(body.big(UInt16.self, at: 9 + 6 * stage + 2 * $0)) / 10 } }
-    }
-
     private func stats(_ body: Data) {
         let shown = body.big(UInt32.self, at: 1), lost = body.big(UInt32.self, at: 5)
-        let app = Streamer.stages(body)
+        let ms = (0 ..< 6).map { Double(body.big(UInt16.self, at: 9 + 2 * $0)) / 10 }
         lock.lock()
-        let encodedMs = encoded.sorted(), sentMs = sent.sorted()
+        let sent = encoded.sorted()
         encoded.removeAll()
-        sent.removeAll()
         let now = nowNanos()
         let kbps = Double(bytes) * 8e6 / Double(max(1, now - reportedAt))
         bytes = 0
         reportedAt = now
+        // Frames went and none came out: a network that drops IP fragments. Small packets from now on.
+        let fragmentsLost = fallback && shown == 0 && !sent.isEmpty && payload != Packet.payload
+        if fragmentsLost { payload = Packet.payload }
         lock.unlock()
-        let fidelity = video.fidelity?.take()
-        if shown > 0 { adapt(median: app[0][0], lost: lost) }
+        if fragmentsLost {
+            log("app display: no frame arrives in large packets: small ones")
+            forceKeyframe()
+        }
+        if shown > 0 { adapt(median: ms[0], lost: lost) }
+        onStats?(Stats(fps: Int(shown), lost: Int(lost), latency: ms[0], latency90: ms[1],
+                       sending: sent.isEmpty ? nil : sent[sent.count / 2], decoding: ms[3], kbps: Int(kbps), cap: bitrate))
         reports += 1
         if lost > 0 || reports % Streamer.statsEvery == 1 {
-            func median(_ v: [Double]) -> String { v.isEmpty ? "?" : String(format: "%.1f", v[v.count / 2]) }
-            // Where the time goes, stage by stage (medians, ms).
+            let median = sent.isEmpty ? "?" : String(format: "%.1f", sent[sent.count / 2])
             log(String(format: "app display: %d fps, lost %d; capture to decoded %.1f ms (90%%: %.1f, max %.1f); "
-                       + "stages: encoded %@, sent %@, first packet %.1f, spread %.1f, decoder wait %.1f, decode %.1f; %.0f kbit/s",
-                       shown, lost, app[0][0], app[0][1], app[0][2], median(encodedMs), median(sentMs),
-                       app[1][0], app[2][0], app[3][0], app[4][0], kbps)
-                + " (at most \(bitrate))"
-                + (fidelity.map { String(format: "; PSNR %.1f dB (lowest %.1f)", $0.0, $0.1) } ?? ""))
+                       + "of which capture to sent %@ ms, first packet to decoded %.1f ms; %.0f kbit/s",
+                       shown, lost, ms[0], ms[1], ms[2], median, ms[3], kbps)
+                + " (at most \(bitrate))")
         }
     }
 
@@ -458,19 +456,25 @@ final class DisplaySession {
     /// the Mac's displays mirrored.
     struct Mode {
         var resolution = "auto"
-        var fps = 0                  // 0: the tablet's refresh rate, up to maxFps
+        var fps = 60
         var mirror: CGDirectDisplayID?
-        var hevc = true              // requested; the app answers whether it decodes it in hardware
-        var priority = "balanced"    // a Priority name
+        var priority = "balanced"    // the preset: a Priority name
+        // Advanced settings; "auto" or 0 leaves each to the preset and the tablet.
+        var codec = "auto"           // or "avc", "hevc": preferred, then negotiated with the app
+        var kbps = 0                 // the bitrate's cap
+        var vbvFrames = 0.0          // the largest a frame may be, in average frames
+        var packets = "auto"         // or "large", "small"
+        var keyframeSeconds = 0
     }
 
     private let endpoints: [NWEndpoint]
     private let expect: String?
     private let cable: Cable?
     private var mode: Mode
+    private var hevc = false  // the codec negotiated
     private var link: Link?
     private var channel: Channel?
-    private var display: ScreenletVirtualDisplay?
+    private var display: POVirtualDisplay?
     private var streamer: Streamer?
     private var started = false
     private var stopped = false
@@ -479,6 +483,7 @@ final class DisplaySession {
     var onStarted: ((Int, Int) -> Void)?
     var onEnded: ((Error?) -> Void)?
     var onPaused: ((Bool) -> Void)?
+    var onStats: ((Streamer.Stats) -> Void)?
 
     init(endpoints: [NWEndpoint], expect: String?, cable: Cable?, mode: Mode) {
         self.endpoints = endpoints
@@ -489,14 +494,6 @@ final class DisplaySession {
 
     func start() {
         Thread.detachNewThread { [self] in run() }
-    }
-
-    static let maxFps = 120
-
-    /// The capture rate for a panel of refresh Hz: 60 when it does not say.
-    static func fps(_ refresh: Double?) -> Int {
-        guard let refresh, refresh >= 30 else { return 60 }
-        return min(maxFps, Int(refresh.rounded()))
     }
 
     /// Ends the session now. Call on the main thread; the link's thread tells the app.
@@ -515,11 +512,17 @@ final class DisplaySession {
             defer { link.close() }
             if stopped { return }
             var key = Data(count: 32)
-            _ = key.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+            guard key.withUnsafeMutableBytes({ SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }) == errSecSuccess else {
+                throw Failure("no random numbers for the session key")
+            }
             let channel = try Channel(key: key, cable: cable)
             self.channel = channel
-            try link.send(["type": "display", "key": Companion.hex(key), "port": Int(channel.port),
-                           "codec": mode.hevc ? "hevc" : "avc"])
+            // The codecs this Mac encodes in hardware, the preferred first; the app picks one.
+            let first = mode.codec != "auto" ? mode.codec : mode.priority == "clarity" ? "hevc" : "avc"
+            let preferred = first == "hevc" ? ["hevc", "avc"] : ["avc", "hevc"]
+            var offered = preferred.filter(Video.hardwareCodecs.contains)
+            if offered.isEmpty { offered = ["avc"] }  // H.264 in software: every Mac has it
+            try link.send(["type": "display", "key": Companion.hex(key), "port": Int(channel.port), "codecs": offered])
             let reply = try link.receive()
             if reply["type"] as? String == "refused" { throw Refused(reason: "\(reply["reason"] ?? "")") }
             guard reply["type"] as? String == "display-ready", let port = reply["port"] as? Int,
@@ -530,16 +533,22 @@ final class DisplaySession {
                 guard let host = link.remoteHost else { throw Failure("no address for the tablet") }
                 channel.app(host: host, port: UInt16(port))
             }
-            log("app display: the tablet shows \(width)x\(height) at \(reply["refresh"] ?? "?") Hz")
+            log("app display: the tablet shows \(width)x\(height) at \(reply["refresh"] ?? "?") Hz, decodes \((reply["decoders"] as? [String: Int])?.sorted { $0.key < $1.key }.map { "\($0.key) at \($0.value) fps" }.joined(separator: ", ") ?? "?")")
             UserDefaults.standard.set([width, height], forKey: "tabletScreen")  // for the resolutions in the window
-            // An app that names no codec decodes H.264 only.
-            if mode.hevc && reply["codec"] as? String != "hevc" { log("app display: the tablet takes H.264 only") }
-            mode.hevc = reply["codec"] as? String == "hevc"
-            let size = mode.mirror.map { Sizes.fit(Sizes.pixels($0), into: (width, height)) }
+            guard let codec = reply["codec"] as? String, offered.contains(codec) else {
+                throw Failure("the app chose \(reply["codec"] ?? "no codec"), not one of \(offered)")
+            }
+            if codec != offered[0] { log("app display: the tablet decodes \(codec), not \(offered[0])") }
+            hevc = codec == "hevc"
+            // Automatic: no more pixels a second than the tablet's decoder takes.
+            let decoderFps = (reply["decoders"] as? [String: Any])?[codec] as? Int
+            var size = mode.mirror.map { Sizes.fit(Sizes.pixels($0), into: (width, height)) }
                 ?? Sizes.choose(mode.resolution, (width, height), wifi: cable == nil)
-            // As fast as the tablet's panel refreshes: a frame waits less for
-            // the next capture, and the app shows it at the next vsync.
-            if mode.fps == 0 { mode.fps = DisplaySession.fps((reply["refresh"] as? NSNumber)?.doubleValue) }
+            if mode.mirror == nil && mode.resolution == "auto", let decoderFps, decoderFps < mode.fps {
+                let rate = width * height * decoderFps
+                size = Sizes.all((width, height)).first { $0.0 * $0.1 * mode.fps <= rate } ?? size
+                log("app display: the tablet decodes \(codec) at \(decoderFps) fps at its size: \(size.0)x\(size.1)")
+            }
             DispatchQueue.main.async { [self] in open(size) }
             try hold(link)
         } catch {
@@ -581,25 +590,27 @@ final class DisplaySession {
             log("macOS: mirroring display \(mirror) at \(size.0)x\(size.1)")
         } else {
             let scale = Sizes.scale(size)
-            guard let display = ScreenletVirtualDisplay(pixels: CGSize(width: size.0, height: size.1),
+            guard let display = POVirtualDisplay(pixels: CGSize(width: size.0, height: size.1),
                                                  points: CGSize(width: size.0 / scale, height: size.1 / scale),
-                                                 refreshRate: Double(mode.fps),
-                                                 name: "Screenlet", vendor: 0x5C4E, product: 0x5350) else {
+                                                 name: "Screenlet", vendor: 0x04E8, product: 0x5350) else {
                 return ended(Failure("macOS did not make the virtual display"))
             }
             self.display = display
             id = display.displayID
-            log("macOS: virtual display \(id), \(size.0 / scale)x\(size.1 / scale) points at \(mode.fps) Hz")
+            log("macOS: virtual display \(id), \(size.0 / scale)x\(size.1 / scale) points")
         }
         displayID = id
         let monitor = Monitor(display: id, size: size)
         let priority = Priority.settings(mode.priority)
         let streamer = Streamer(channel: channel!, display: id, size: size, fps: mode.fps,
-                                bitrate: Sizes.bitrate(priority.kbps, size), vbvFrames: priority.vbvFrames, hevc: mode.hevc,
-                                wifi: cable == nil,
+                                bitrate: mode.kbps > 0 ? mode.kbps : Sizes.bitrate(priority.kbps, size),
+                                vbvFrames: mode.vbvFrames > 0 ? mode.vbvFrames : priority.vbvFrames, hevc: hevc,
+                                keyframeSeconds: mode.keyframeSeconds > 0 ? mode.keyframeSeconds : Video.keyframeSeconds,
+                                packets: mode.packets, wifi: cable == nil,
                                 input: Input(monitor: monitor, size: size),
                                 onError: { [weak self] message in later { self?.ended(Failure(message)) } })
         streamer.onPaused = { [weak self] paused in later { self?.onPaused?(paused) } }
+        streamer.onStats = { [weak self] stats in later { self?.onStats?(stats) } }
         self.streamer = streamer
         streamer.start()
         started = true

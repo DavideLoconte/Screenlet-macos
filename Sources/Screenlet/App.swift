@@ -3,7 +3,7 @@ import Combine
 import Network
 import SwiftUI
 
-/// A string in the system's language.
+/// A string from Localizable.strings, or the key itself.
 func L(_ key: String) -> String {
     Bundle.main.localizedString(forKey: key, value: key, table: nil)
 }
@@ -21,9 +21,8 @@ final class Model: ObservableObject {
     @Published var plugged = Cable.present
     @Published var session: DisplaySession?
     @Published var showing: String?   // the tablet showing the desktop
-    /// Show the desktop by itself when a paired tablet is plugged in.
-    @Published var autoStart = UserDefaults.standard.object(forKey: "autoStart") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(autoStart, forKey: "autoStart") }
+    @Published var minimized = UserDefaults.standard.bool(forKey: "minimized") {
+        didSet { UserDefaults.standard.set(minimized, forKey: "minimized") }
     }
 
     // How the desktop reaches the tablet (DisplaySession.Mode), from the next session.
@@ -33,18 +32,56 @@ final class Model: ObservableObject {
     @Published var resolution = UserDefaults.standard.string(forKey: "resolution") ?? "auto" {
         didSet { UserDefaults.standard.set(resolution, forKey: "resolution") }
     }
+    @Published var fps = UserDefaults.standard.object(forKey: "fps") as? Int ?? 60 {
+        didSet { UserDefaults.standard.set(fps, forKey: "fps") }
+    }
     @Published var mirror = UserDefaults.standard.object(forKey: "mirror") as? Int ?? Int(CGMainDisplayID()) {
         didSet { UserDefaults.standard.set(mirror, forKey: "mirror") }
+    }
+
+    /// "auto" uses the cable when a tablet is plugged in and Wi-Fi otherwise; or "wifi", "cable".
+    @Published var connection = UserDefaults.standard.string(forKey: "connection") ?? "auto" {
+        didSet { UserDefaults.standard.set(connection, forKey: "connection") }
     }
     @Published var priority = UserDefaults.standard.string(forKey: "priority") ?? "balanced" {
         didSet { UserDefaults.standard.set(priority, forKey: "priority") }
     }
 
+    // Advanced: each overrides the preset ("auto" or 0 leaves it to the preset and the tablet).
+    @Published var codec = UserDefaults.standard.string(forKey: "codec") ?? "auto" {
+        didSet { UserDefaults.standard.set(codec, forKey: "codec") }
+    }
+    @Published var kbps = UserDefaults.standard.integer(forKey: "kbps") {
+        didSet { UserDefaults.standard.set(kbps, forKey: "kbps") }
+    }
+    @Published var vbvFrames = UserDefaults.standard.double(forKey: "vbvFrames") {
+        didSet { UserDefaults.standard.set(vbvFrames, forKey: "vbvFrames") }
+    }
+    @Published var packets = UserDefaults.standard.string(forKey: "packets") ?? "auto" {
+        didSet { UserDefaults.standard.set(packets, forKey: "packets") }
+    }
+    @Published var keyframeSeconds = UserDefaults.standard.integer(forKey: "keyframeSeconds") {
+        didSet { UserDefaults.standard.set(keyframeSeconds, forKey: "keyframeSeconds") }
+    }
+
+    func restoreAdvanced() {
+        fps = 60
+        codec = "auto"
+        kbps = 0
+        vbvFrames = 0
+        packets = "auto"
+        keyframeSeconds = 0
+    }
+
+    /// The last report of the session in progress.
+    @Published var stats: Streamer.Stats?
+
     var mode: DisplaySession.Mode {
         // The chosen display if it is still connected, the main one otherwise.
         let shown = Model.displays().contains { $0.id == mirror } ? CGDirectDisplayID(mirror) : CGMainDisplayID()
-        // The refresh rate is the tablet's, the codec HEVC where it decodes it: nothing to choose.
-        return DisplaySession.Mode(resolution: resolution, mirror: mirroring ? shown : nil, priority: priority)
+        return DisplaySession.Mode(resolution: resolution, fps: fps, mirror: mirroring ? shown : nil, priority: priority,
+                                   codec: codec, kbps: kbps, vbvFrames: vbvFrames, packets: packets,
+                                   keyframeSeconds: keyframeSeconds)
     }
 
     /// The Mac's displays that can be mirrored, excluding Screenlet's: id and name.
@@ -69,19 +106,11 @@ final class Model: ObservableObject {
         state = L("No tablet with Screenlet open")
         browse()
         // There is no notification for the cable, so poll it.
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             guard let self else { return }
             let now = self.cable != nil || Cable.present
-            if now == self.plugged { return }
-            self.plugged = now
-            // Plugged in: the desktop goes to it by itself, once paired.
-            if now && self.autoStart && self.session == nil && !Paired.all().isEmpty { self.showOverCable() }
+            if now != self.plugged { self.plugged = now }
         }
-    }
-
-    private func showOverCable() {
-        // No announced id here: any paired tablet will do, and TLS proves which.
-        overCable { self.start(L("the tablet on the cable"), [$0.endpoint], expect: nil, cable: $0) }
     }
 
     func show(_ text: String) {
@@ -111,10 +140,10 @@ final class Model: ObservableObject {
         }
         let paired = Paired.all()
         var found: [Action] = []
-        // A plugged-in tablet always uses the cable, whose tail latency is about
-        // a tenth of Wi-Fi's. A second tablet on Wi-Fi is not shown then.
-        let byCable = plugged
-        let byWifi = !plugged
+        // In automatic mode a plugged-in tablet always uses the cable, whose tail
+        // latency is about a tenth of Wi-Fi's. A second tablet on Wi-Fi is not shown.
+        let byCable = plugged && connection != "wifi"
+        let byWifi = connection == "wifi" || (connection == "auto" && !plugged)
         for (key, tablet) in tablets.sorted(by: { $0.value.name.lowercased() < $1.value.name.lowercased() }) {
             if paired.keys.contains(where: { $0.hasPrefix(tablet.id) }) && !tablet.id.isEmpty {
                 if byWifi {
@@ -123,7 +152,7 @@ final class Model: ObservableObject {
                         self.start(tablet.name, [tablet.endpoint], expect: tablet.id)
                     })
                 }
-            } else {
+            } else if connection != "cable" {
                 found.append(Action(id: "pair " + key, title: String(format: L("Pair with %@…"), tablet.name),
                                     device: tablet.name, detail: wifi, icon: "wifi", short: L("Pair…"), primary: false) {
                     self.pair(tablet.name, [tablet.endpoint])
@@ -133,7 +162,10 @@ final class Model: ObservableObject {
         if byCable {
             if !paired.isEmpty {
                 found.append(Action(id: "cable", title: L("Show the desktop over the cable"), device: onCable, detail: cable,
-                                    icon: "cable.connector", short: L("Show the desktop"), run: showOverCable))
+                                    icon: "cable.connector", short: L("Show the desktop")) {
+                    // No announced id here: any paired tablet will do, and TLS proves which.
+                    self.overCable { self.start(L("the tablet on the cable"), [$0.endpoint], expect: nil, cable: $0) }
+                })
             }
             found.append(Action(id: "pair cable", title: L("Pair over the cable…"), device: onCable, detail: cable,
                                 icon: "cable.connector", short: L("Pair…"), primary: paired.isEmpty) {
@@ -203,9 +235,11 @@ final class Model: ObservableObject {
         let session = DisplaySession(endpoints: endpoints, expect: expect, cable: cable, mode: mode)
         session.onStarted = { [weak self] w, h in self?.show(String(format: L("On %@, %dx%d"), name, w, h)) }
         session.onPaused = { [weak self] paused in self?.show(String(format: L(paused ? "On %@, paused" : "On %@"), name)) }
+        session.onStats = { [weak self] in self?.stats = $0 }
         session.onEnded = { [weak self] error in
             guard let self else { return }
             self.session = nil
+            self.stats = nil
             guard let error else { return self.show(String(format: L("Ended on %@"), name)) }
             self.show(String(format: L("Could not show the desktop on %@"), name))
             alert(String(format: L("The desktop on %@ ended"), name), L(error.localizedDescription))
@@ -340,6 +374,7 @@ struct Explained: View {
 struct MainView: View {
     @ObservedObject var model: Model
     let permissions: () -> Void
+    @State private var advanced = false
 
     private var tint: Color {
         model.session != nil ? .green : model.tablets.isEmpty && !model.plugged ? .secondary : .blue
@@ -349,91 +384,193 @@ struct MainView: View {
         let actions = model.actions
         // Each tablet with its buttons, in the order of its actions.
         let devices = actions.reduce(into: [String]()) { if !$0.contains($1.device) { $0.append($1.device) } }
-        VStack(spacing: 0) {
-            Header(title: "Screenlet", detail: model.state, tint: tint)
-            Form {
-                Section(L("Devices")) {
-                    if devices.isEmpty {
-                        HStack(spacing: 12) {
-                            Image(systemName: "ipad.landscape").font(.title2).foregroundStyle(.tertiary)
-                            Text(L("Open Screenlet on the tablet, on the same Wi-Fi as this Mac or on the cable."))
-                                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.vertical, 6)
-                    }
-                    ForEach(devices, id: \.self) { device in
-                        let mine = actions.filter { $0.device == device }
-                        HStack(spacing: 12) {
-                            Badge(symbol: mine[0].icon, color: model.session != nil ? .green : .blue)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(device).fontWeight(.medium)
-                                Text(mine[0].detail).font(.callout).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            ForEach(mine) { action in
-                                if action.primary {
-                                    Button(action.short, action: action.run).buttonStyle(.borderedProminent)
-                                } else {
-                                    Button(action.short, action: action.run)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-                Section(L("Display")) {
-                    Picker(selection: $model.mirroring) {
-                        Text(L("Extend")).tag(false)
-                        Text(L("Mirror")).tag(true)
-                    } label: {
-                        Explained(L("Show the desktop"), L("help.mode"))
-                    }
-                    .pickerStyle(.segmented)
-                    if model.mirroring {
-                        Picker(L("Display"), selection: $model.mirror) {
-                            ForEach(Model.displays(), id: \.id) { Text($0.name).tag($0.id) }
-                        }
-                    } else {
-                        Picker(selection: $model.resolution) {
-                            Text(model.tabletScreen.flatMap(Sizes.models).map { String(format: L("Automatic (%@)"), $0) }
-                                 ?? L("Automatic")).tag("auto")
-                            if let screen = model.tabletScreen {
-                                ForEach(Sizes.all(screen), id: \.0) { size in
-                                    let name = "\(size.0) × \(size.1)"
-                                    Text(size == Sizes.all(screen)[0] ? String(format: L("%@ (native)"), name) : name)
-                                        .tag(size == Sizes.all(screen)[0] ? "tablet" : "\(size.0)x\(size.1)")
-                                }
-                            } else {
-                                Text(L("Native")).tag("tablet")
-                            }
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                Header(title: "Screenlet", detail: model.state, tint: tint)
+                Form {
+                    Section(L("Devices")) {
+                        Picker(selection: $model.connection) {
+                            Text("Auto").tag("auto")
+                            Text(L("Wi-Fi")).tag("wifi")
+                            Text(L("Cable")).tag("cable")
                         } label: {
-                            Explained(L("Resolution"), L("help.resolution"))
+                            Explained(L("Connection"), L("help.connection"))
+                        }
+                        .pickerStyle(.segmented)
+                        if devices.isEmpty {
+                            HStack(spacing: 12) {
+                                Image(systemName: "ipad.landscape").font(.title2).foregroundStyle(.tertiary)
+                                Text(L("Open Screenlet on the tablet, on the same Wi-Fi as this Mac or on the cable."))
+                                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.vertical, 6)
+                        }
+                        ForEach(devices, id: \.self) { device in
+                            let mine = actions.filter { $0.device == device }
+                            HStack(spacing: 12) {
+                                Badge(symbol: mine[0].icon, color: model.session != nil ? .green : .blue)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(device).fontWeight(.medium)
+                                    Text(mine[0].detail).font(.callout).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                ForEach(mine) { action in
+                                    if action.primary {
+                                        Button(action.short, action: action.run).buttonStyle(.borderedProminent)
+                                    } else {
+                                        Button(action.short, action: action.run)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
-                    Picker(selection: $model.priority) {
-                        Text(L("Latency")).tag("latency")
-                        Text(L("Balanced")).tag("balanced")
-                        Text(L("Clarity")).tag("clarity")
-                    } label: {
-                        Explained(L("Priority"), L("help.priority"))
+                    Section(L("Display")) {
+                        Picker(selection: $model.mirroring) {
+                            Text(L("Extend")).tag(false)
+                            Text(L("Mirror")).tag(true)
+                        } label: {
+                            Explained(L("Show the desktop"), L("help.mode"))
+                        }
+                        .pickerStyle(.segmented)
+                        if model.mirroring {
+                            Picker(L("Display"), selection: $model.mirror) {
+                                ForEach(Model.displays(), id: \.id) { Text($0.name).tag($0.id) }
+                            }
+                        } else {
+                            Picker(selection: $model.resolution) {
+                                Text(model.tabletScreen.flatMap(Sizes.models).map { String(format: L("Automatic (%@)"), $0) }
+                                     ?? L("Automatic")).tag("auto")
+                                if let screen = model.tabletScreen {
+                                    ForEach(Sizes.all(screen), id: \.0) { size in
+                                        let name = "\(size.0) × \(size.1)"
+                                        Text(size == Sizes.all(screen)[0] ? String(format: L("%@ (native)"), name) : name)
+                                            .tag(size == Sizes.all(screen)[0] ? "tablet" : "\(size.0)x\(size.1)")
+                                    }
+                                } else {
+                                    Text(L("Native")).tag("tablet")
+                                }
+                            } label: {
+                                Explained(L("Resolution"), L("help.resolution"))
+                            }
+                        }
+                        Picker(selection: $model.priority) {
+                            Text(L("Lowest latency")).tag("latency")
+                            Text(L("Balanced")).tag("balanced")
+                            Text(L("Sharpest")).tag("clarity")
+                        } label: {
+                            Explained(L("Optimize for"), L("help.priority"))
+                        }
+                    }
+                    Section(L("Settings")) {
+                        Toggle(L("Open minimized in the menu bar"), isOn: $model.minimized)
+                        LabeledContent(L("Permissions")) {
+                            Button(L("Review…"), action: permissions)
+                        }
+                        LabeledContent(L("Codec, bitrate, statistics")) {
+                            Button(advanced ? L("Hide advanced") : L("Show advanced"), systemImage: advanced ? "chevron.left" : "chevron.right") {
+                                advanced.toggle()
+                            }
+                        }
                     }
                 }
-                Section(L("Settings")) {
-                    Toggle(L("Show the desktop when the tablet is plugged in"), isOn: $model.autoStart)
-                    LabeledContent(L("Permissions")) {
-                        Button(L("Review…"), action: permissions)
-                    }
-                }
+                .formStyle(.grouped)
+                .scrollDisabled(true)
             }
-            .formStyle(.grouped)
-            .scrollDisabled(true)
+            .frame(width: 480)
+            // Advanced to the right: the window grows wider, not taller.
+            if advanced {
+                Divider()
+                Form { AdvancedSections(model: model) }
+                    .formStyle(.grouped)
+                    .scrollDisabled(true)
+                    .frame(width: 420)
+                    .padding(.top, 8)
+            }
         }
-        .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
     }
 }
 
+/// The settings for those who measure: each overrides what the preset and
+/// the tablet would choose, from the next session; and the live statistics.
+struct AdvancedSections: View {
+    @ObservedObject var model: Model
+
+    var body: some View {
+        Section(L("Video")) {
+            Picker(selection: $model.fps) {
+                Text("60 Hz").tag(60)
+                Text("30 Hz").tag(30)
+            } label: {
+                Explained(L("Refresh rate"), L("help.fps"))
+            }
+            Picker(selection: $model.codec) {
+                Text(L("Automatic")).tag("auto")
+                Text("H.264").tag("avc")
+                Text("HEVC (H.265)").tag("hevc")
+            } label: {
+                Explained(L("Codec"), L("help.codec"))
+            }
+            Picker(selection: $model.kbps) {
+                Text(L("Automatic")).tag(0)
+                ForEach([8, 12, 20, 30, 40, 60], id: \.self) { Text("\($0) Mbit/s").tag($0 * 1000) }
+            } label: {
+                Explained(L("Bitrate"), L("help.bitrate"))
+            }
+            Picker(selection: $model.vbvFrames) {
+                Text(L("Automatic")).tag(0.0)
+                ForEach([1.0, 2, 4, 8], id: \.self) { Text(String(format: L("%.0f× the average"), $0)).tag($0) }
+            } label: {
+                Explained(L("Largest frame"), L("help.frame"))
+            }
+        }
+        Section(L("Network")) {
+            Picker(selection: $model.packets) {
+                Text(L("Automatic")).tag("auto")
+                Text(L("Large")).tag("large")
+                Text(L("Small")).tag("small")
+            } label: {
+                Explained(L("Packets"), L("help.packets"))
+            }
+            Picker(selection: $model.keyframeSeconds) {
+                Text(L("Automatic")).tag(0)
+                ForEach([2, 5, 10, 30, 60], id: \.self) { Text(String(format: L("Every %d s"), $0)).tag($0) }
+            } label: {
+                Explained(L("Keyframes"), L("help.keyframes"))
+            }
+            HStack {
+                Text(L("From the next session.")).font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button(L("Restore defaults"), action: model.restoreAdvanced)
+            }
+        }
+        Section {
+            if let s = model.stats {
+                LabeledContent(L("Capture to decoded")) {
+                    Text(String(format: L("%.1f ms (90%%: %.1f)"), s.latency, s.latency90)).monospacedDigit()
+                }
+                LabeledContent(L("Encoding and sending")) {
+                    Text(s.sending.map { String(format: "%.1f ms", $0) } ?? "–").monospacedDigit()
+                }
+                LabeledContent(L("Receiving and decoding")) { Text(String(format: "%.1f ms", s.decoding)).monospacedDigit() }
+                LabeledContent(L("Frames")) {
+                    Text(String(format: L("%d fps, %d lost"), s.fps, s.lost)).monospacedDigit()
+                }
+                LabeledContent(L("Bitrate")) {
+                    Text(String(format: L("%.1f of %.1f Mbit/s"), Double(s.kbps) / 1000, Double(s.cap) / 1000)).monospacedDigit()
+                }
+            } else {
+                Text(L("Shown while the desktop is on the tablet.")).foregroundStyle(.secondary)
+            }
+        } header: {
+            Explained(L("Statistics"), L("help.stats"))
+        }
+    }
+}
+
 struct WelcomeView: View {
+    @ObservedObject var model: Model
     let done: () -> Void
     @State private var screen = Permissions.screenRecording
     @State private var access = Permissions.accessibility
@@ -451,7 +588,7 @@ struct WelcomeView: View {
                         // macOS asks only once; after that, the user allows it in System Settings.
                         if asked.insert("screen").inserted { CGRequestScreenCaptureAccess() } else { Permissions.openSettings("ScreenCapture") }
                     }
-                    row("hand.point.up.left.fill", .blue, L("Accessibility"), L("So the tablet's touches and pen move the pointer."), access) {
+                    row("hand.point.up.left.fill", .blue, L("Accessibility"), L("So the tablet's touches and the S Pen move the pointer."), access) {
                         if asked.insert("access").inserted { _ = Monitor.accessibility(prompt: true) } else { Permissions.openSettings("Accessibility") }
                     }
                 } footer: {
@@ -518,13 +655,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.autosaveName = "Screenlet"  // remembers where it is ⌘-dragged
-        item.button?.image = NSImage(systemSymbolName: "rectangle.on.rectangle", accessibilityDescription: "Screenlet")
+        item.button?.image = NSImage(systemSymbolName: "ipad.landscape", accessibilityDescription: "Screenlet")
         let menu = NSMenu()
         menu.delegate = self
         item.menu = menu
         if !Permissions.granted {
             openWelcome()
-        } else {
+        } else if !model.minimized {
             openWindow()
         }
     }
@@ -559,7 +696,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func make(_ title: String, _ view: some View) -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: view))
+        let host = NSHostingController(rootView: view)
+        host.sizingOptions = [.preferredContentSize]  // the window follows the content (Show advanced)
+        let window = NSWindow(contentViewController: host)
         window.title = title
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false  // closing hides it; the menu bar shows it again
@@ -575,7 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func openWelcome() {
         if welcome == nil {
-            welcome = make("Screenlet", WelcomeView { [weak self] in
+            welcome = make("Screenlet", WelcomeView(model: model) { [weak self] in
                 self?.welcome?.orderOut(nil)
                 self?.openWindow()
             })

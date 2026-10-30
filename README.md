@@ -1,87 +1,110 @@
-<p align="center"><img src="docs/icon.png" width="128" alt="Screenlet icon"></p>
+# Screenlet for macOS
 
-<h1 align="center">Screenlet for macOS</h1>
+Use an Android tablet (made for the Samsung Galaxy Tab and its S Pen) as a
+second display for your Mac, over Wi-Fi or a USB-C cable, with the lowest
+latency it can get. The tablet runs
+[Screenlet Companion](https://github.com/DavideLoconte/Screenlet-Companion);
+the two speak the [Screenlet protocol](PROTOCOL.md).
 
-<p align="center">Your Android tablet as a second display for your Mac,<br>
-with touch and pen, over a USB-C cable first and Wi-Fi when there is none.</p>
+Written natively in Swift with a little Objective-C and no dependencies.
+Screenlet started as a fork of
+[Plus One](https://github.com/GabrieleSantangelo/PlusOne).
 
----
+**A proof of concept, not ready for daily use.** The version is in [VERSION](VERSION).
 
-This is the Mac's half of Screenlet. On the tablet, install
-[Screenlet companion](https://github.com/DavideLoconte/Screenlet-companion).
-[Screenlet for GNOME](https://github.com/DavideLoconte/Screenlet-gnome) is the
-Linux half. Windows and KDE will follow.
+## Features
 
-## Use it
+- **Low latency.** About 19 ms median from capture to decoded over the
+  cable, hardware H.264 or HEVC, no jitter buffer.
+- **Extend or mirror.** A new display at the tablet's proportions
+  (automatic, native or another size, 60 or 30 Hz), or one of the Mac's
+  displays mirrored.
+- **Touch and S Pen.** One finger moves the pointer, a two-finger tap
+  right-clicks, and the pen sends pressure and tilt.
+- **USB cable or network.** The cable needs no developer options on the
+  tablet; over Wi-Fi the tablet is found with Bonjour.
+- **Simple, or as precise as you like.** The window asks for a resolution
+  and what to optimize for (lowest latency, balanced, sharpest); its
+  Advanced tab sets codec, refresh rate, bitrate, largest frame, packets and
+  keyframes one by one, and shows the latency measured live, stage by stage.
+- **Only your tablet.** Paired once by a six-digit code on both screens,
+  TLS 1.3 on the link and AES-GCM on every video and input packet.
 
-1. Install Screenlet on the Mac and the companion on the tablet.
-2. Plug the tablet in with a USB-C cable, or have it on the same Wi-Fi.
-3. Click **Pair** in Screenlet's menu bar item and check that both screens
-   show the same six digits.
+## How it works
 
-That is all. From then on, plugging the tablet in shows the desktop on it,
-and **Disconnect** in the menu bar ends it. The window has only three
-settings: **Extend** or **Mirror**, the resolution (Automatic by default),
-and the priority (Latency, Balanced or Clarity). The refresh rate follows the
-tablet's panel, up to 120 Hz. The codec is HEVC where the tablet decodes it
-in hardware and H.264 otherwise. The cable is always used when it is plugged in.
+| Part | Implementation |
+|---|---|
+| Second display | `CGVirtualDisplay`, a private CoreGraphics API that a macOS update could break |
+| Capture and encoding | ScreenCaptureKit (NV12), VideoToolbox H.264 or HEVC with low-latency rate control |
+| Bandwidth | Adjusted every second from the delay the tablet reports |
+| Link and pairing | Network.framework with TLS 1.3, Bonjour discovery with `NWBrowser` |
+| Video packets | AES-GCM with CryptoKit over UDP, or over the cable |
+| Cable | Android Open Accessory through IOUSBHost, with no libusb |
+| Touch and S Pen | CGEvents |
+| App | Menu bar item and SwiftUI window, a welcome window for permissions |
 
-- **Fingers**: a finger moves the pointer the moment it lands. It clicks
-  when it lifts, drags as soon as it moves, and presses after being held
-  still for a moment. Two fingers scroll, and a two-finger tap is a right click.
-- **Pen**: proximity, pressure and tilt reach the apps that read a tablet.
-  The button is a right click.
+H.264 and HEVC are the only encoders VideoToolbox runs in hardware, so
+there are no other codecs.
 
-## Install
+## Build and install
 
-Download `Screenlet-<version>-macos.zip` from [Releases](../../releases) and
-move `Screenlet.app` to Applications. It is signed ad hoc, not with a
-Developer ID, so remove the quarantine flag before the first launch:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/Screenlet.app
-```
-
-On first launch Screenlet asks for **Screen Recording** and **Accessibility**
-(for touch and pen), and macOS asks about the **local network**. It needs
-macOS 15. The log is at `~/Library/Logs/Screenlet.log`.
-
-## Latency
-
-- **Capture**: ScreenCaptureKit at the tablet's refresh rate, on a virtual
-  display that refreshes at the same rate.
-- **Encode**: the hardware encoder with low-latency rate control, speed
-  before quality, no frame reordering, and no frame held back. BT.709 colour
-  is declared in the stream, so the tablet shows the Mac's colours.
-- **Annex B**: copied once from the encoder's memory.
-- **Send**: from a thread of its own, so a slow USB write never holds the
-  encoder. Each frame's packets go in as few USB transfers as fit, built in
-  one buffer.
-- **Wi-Fi**: the send queue holds about one keyframe, no more. The bitrate
-  starts at half and adapts every second from the delay the tablet measures.
-- **Touch**: nothing waits to see whether a second finger is coming.
-
-Every two seconds the log shows the median of each stage of a frame's way:
-encoded and sent on the Mac, then first packet, spread, decoder wait and
-decode on the tablet. The stages are defined in [PROTOCOL.md](PROTOCOL.md) §3.5.
-
-```bash
-/Applications/Screenlet.app/Contents/MacOS/Screenlet --show-cable 20 pattern measure   # or --show-wifi
-./bench.sh cable    # every codec × priority: latency, fps, kbit/s and PSNR fidelity
-```
-
-## Build
-
-macOS 15 and Xcode 16:
+Requires macOS 15 and Xcode 16 or later.
 
 ```bash
 swift test
-./build-app.sh      # dist/Screenlet.app, its zip and a Homebrew cask
+./build-app.sh       # dist/Screenlet.app, a zip of it and a Homebrew cask
 ```
 
-CI tests and builds every push. A `v*` tag publishes a release.
+To install with Homebrew, create a tap with `brew tap-new <you>/screenlet`,
+copy `dist/screenlet.rb` into its `Casks` folder and run
+`brew install --cask <you>/screenlet/screenlet`. The app is signed ad hoc rather
+than with a Developer ID, so remove the quarantine flag with
+`xattr -dr com.apple.quarantine "/Applications/Screenlet.app"`.
+
+On first launch Screenlet asks for **Screen Recording** and **Accessibility**,
+and may need to be reopened afterwards. macOS also asks for **local network**
+access. The log is at `~/Library/Logs/Screenlet.log`.
+
+**CI** tests and builds every push and pull request, and uploads the app as
+the run's artifact. Pushing a `v*` tag also publishes a release with the zip
+and a cask that downloads it.
+
+## Measuring latency
+
+```bash
+"/Applications/Screenlet.app/Contents/MacOS/Screenlet" --show-cable 20 [pattern | mirror | hevc | latency | balanced | clarity | 30 | native | WxH]
+```
+
+This shows the desktop over the cable for 20 seconds and logs the latency
+the tablet measures, from capture to decoded with the clocks synchronised,
+every 2 seconds. `--show-wifi 20` does the same with the first paired tablet
+on the network. `pattern` puts a moving test pattern (scrolling text, a
+panning photo, a plasma) on the tablet's display, the same load every run, so
+two runs compare.
+
+On a Galaxy Tab S6 Lite (a slow tablet: newer ones should do better), H.264,
+latency priority, with the pattern and Screenlet Companion's release build:
+
+| | median, capture to decoded | 90th percentile |
+|---|---|---|
+| USB cable | 11–12 ms | 17 ms |
+| Wi-Fi 5 GHz, AWDL off | 13–14 ms | 18–19 ms |
+
+Of that, some 2–3 ms go to encoding and sending, under 1 ms to the frame's
+packets reaching the decoder, and 6–7 ms to decoding.
+
+Over Wi-Fi, AWDL (what AirDrop, Handoff, Universal Control and Sidecar use)
+takes the Mac's Wi-Fi to another channel now and then, and packets wait:
+on the same tablet the 90th percentile went from some 95 ms to 30–45 ms with
+it off. While you use the tablet, `sudo ifconfig awdl0 down` turns it off
+(AirDrop and Handoff with it) until `sudo ifconfig awdl0 up` or a restart.
+
+## Future work
+
+- Screenlet for Linux and Windows, speaking the same protocol.
+- Wi-Fi Direct: macOS has no API for it, so the tablet would host a P2P
+  group the Mac joins as a Wi-Fi network (losing its own Wi-Fi meanwhile).
 
 ## License
 
-MIT. Screenlet started as a fork of
-[Plus One](https://github.com/GabrieleSantangelo/PlusOne) by Gabriele Santangelo.
+MIT, like Plus One. See [LICENSE](LICENSE).

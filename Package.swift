@@ -1,5 +1,5 @@
 // swift-tools-version:6.0
-// Screenlet for macOS. build-app.sh packages it as Screenlet.app.
+// Screenlet. build-app.sh packages it as Screenlet.app.
 import PackageDescription
 
 let package = Package(
@@ -12,7 +12,6 @@ let package = Package(
             name: "Screenlet",
             dependencies: ["Native"],
             swiftSettings: [.swiftLanguageMode(.v5)]),
-        .testTarget(name: "ScreenletTests", dependencies: ["Screenlet"], resources: [.copy("Resources/vectors.json")],
-                    swiftSettings: [.swiftLanguageMode(.v5)]),
+        .testTarget(name: "ScreenletTests", dependencies: ["Screenlet"], swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )
