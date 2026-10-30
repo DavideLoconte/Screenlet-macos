@@ -8,7 +8,8 @@ import Testing
 // Screenlet for GNOME check the same values.
 private let vectors: [String: [String: Any]] = {
     let url = Bundle.module.url(forResource: "vectors", withExtension: "json")!
-    return try! JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: [String: Any]]
+    let all = try! JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+    return all.compactMapValues { $0 as? [String: Any] }  // the sections, not the comment
 }()
 
 private func hex(_ section: String, _ key: String) -> Data {
