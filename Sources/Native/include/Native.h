@@ -6,7 +6,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface SLVirtualDisplay : NSObject
+@interface ScreenletVirtualDisplay : NSObject
 /// A display of the given size in pixels, laid out in points (half the pixels
 /// when HiDPI). Returns nil if macOS refuses to create it.
 - (nullable instancetype)initWithPixels:(CGSize)pixels points:(CGSize)points refreshRate:(double)refreshRate
@@ -16,7 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// The tablet as a USB accessory (Android Open Accessory). The Mac is the
 /// USB host, with one bulk pipe in each direction.
-@interface SLAccessory : NSObject
+@interface ScreenletAccessory : NSObject
 /// Whether an Android device of a known maker, or one already in accessory mode, is connected.
 + (BOOL)tabletPresent;
 /// Opens the accessory, switching the tablet to accessory mode first if needed.

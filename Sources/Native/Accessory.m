@@ -54,7 +54,7 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
     return r;
 }
 
-@implementation SLAccessory {
+@implementation ScreenletAccessory {
     IOUSBHostInterface *_interface;
     IOUSBHostPipe *_in, *_out;
     NSUInteger _packet;

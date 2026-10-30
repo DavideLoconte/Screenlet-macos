@@ -26,7 +26,7 @@
 @property (readonly) CGDirectDisplayID displayID;
 @end
 
-@implementation SLVirtualDisplay {
+@implementation ScreenletVirtualDisplay {
     CGVirtualDisplay *_display;  // released with this object, removing the display
 }
 

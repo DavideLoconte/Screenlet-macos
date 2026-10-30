@@ -16,7 +16,7 @@ final class Cable {
     static let answerWait: TimeInterval = 300  // for the user to allow the accessory the first time
     static let maxFrame = 1 << 20     // bytes; a longer frame means a broken or hostile tablet
 
-    private let accessory: SLAccessory
+    private let accessory: ScreenletAccessory
     private let writing = NSLock()
     private var listener: Int32 = -1
     private(set) var endpoint: NWEndpoint!   // where companion links connect
@@ -30,11 +30,11 @@ final class Cable {
     var onDatagram: ((Data) -> Void)?
     var onLost: ((Error) -> Void)?
 
-    static var present: Bool { SLAccessory.tabletPresent() }
+    static var present: Bool { ScreenletAccessory.tabletPresent() }
 
     /// Switches the tablet to accessory mode and waits for the app to answer. Blocks.
     init() throws {
-        accessory = try SLAccessory(identity: Cable.identity)
+        accessory = try ScreenletAccessory(identity: Cable.identity)
         do {
             try hello()
             try listen()

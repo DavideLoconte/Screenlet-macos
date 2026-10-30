@@ -470,7 +470,7 @@ final class DisplaySession {
     private var mode: Mode
     private var link: Link?
     private var channel: Channel?
-    private var display: SLVirtualDisplay?
+    private var display: ScreenletVirtualDisplay?
     private var streamer: Streamer?
     private var started = false
     private var stopped = false
@@ -581,7 +581,7 @@ final class DisplaySession {
             log("macOS: mirroring display \(mirror) at \(size.0)x\(size.1)")
         } else {
             let scale = Sizes.scale(size)
-            guard let display = SLVirtualDisplay(pixels: CGSize(width: size.0, height: size.1),
+            guard let display = ScreenletVirtualDisplay(pixels: CGSize(width: size.0, height: size.1),
                                                  points: CGSize(width: size.0 / scale, height: size.1 / scale),
                                                  refreshRate: Double(mode.fps),
                                                  name: "Screenlet", vendor: 0x5C4E, product: 0x5350) else {
