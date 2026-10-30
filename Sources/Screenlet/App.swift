@@ -37,7 +37,7 @@ final class Model: ObservableObject {
         didSet { UserDefaults.standard.set(fps, forKey: "refresh") }
     }
     /// Show the desktop by itself when a paired tablet is plugged in.
-    @Published var autoStart = UserDefaults.standard.object(forKey: "autoStart") as? Bool ?? true {
+    @Published var autoStart = UserDefaults.standard.object(forKey: "autoStart") as? Bool ?? false {
         didSet { UserDefaults.standard.set(autoStart, forKey: "autoStart") }
     }
     @Published var mirror = UserDefaults.standard.object(forKey: "mirror") as? Int ?? Int(CGMainDisplayID()) {
@@ -118,14 +118,15 @@ final class Model: ObservableObject {
             self.plugged = now
             // Plugged in: the desktop goes to it by itself, once paired.
             if now && self.autoStart && self.connection != "wifi" && self.session == nil && !Paired.all().isEmpty {
-                self.showOverCable()
+                self.showOverCable(chosen: false)
             }
         }
     }
 
-    private func showOverCable() {
+    /// chosen: by the user, who may then be asked to pair. Never for a tablet merely plugged in.
+    private func showOverCable(chosen: Bool) {
         // No announced id here: any paired tablet will do, and TLS proves which.
-        overCable { self.start(L("the tablet on the cable"), [$0.endpoint], expect: nil, cable: $0) }
+        overCable { self.start(L("the tablet on the cable"), [$0.endpoint], expect: nil, cable: $0, chosen: chosen) }
     }
 
     func show(_ text: String) {
@@ -153,7 +154,7 @@ final class Model: ObservableObject {
             return [Action(id: "stop", title: L("Disconnect"), device: showing ?? "", detail: state,
                            icon: "rectangle.on.rectangle", short: L("Disconnect"), primary: false, run: disconnect)]
         }
-        let paired = Paired.all()
+        let paired = Paired.all(), connect = L("Connect")
         var found: [Action] = []
         // In automatic mode a plugged-in tablet always uses the cable, whose tail
         // latency is about a tenth of Wi-Fi's. A second tablet on Wi-Fi is not shown.
@@ -162,26 +163,22 @@ final class Model: ObservableObject {
         for (key, tablet) in tablets.sorted(by: { $0.value.name.lowercased() < $1.value.name.lowercased() }) {
             if paired.keys.contains(where: { $0.hasPrefix(tablet.id) }) && !tablet.id.isEmpty {
                 if byWifi {
-                    found.append(Action(id: "show " + key, title: String(format: L("Show the desktop on %@"), tablet.name),
-                                        device: tablet.name, detail: wifi, icon: "wifi", short: L("Show the desktop")) {
-                        self.start(tablet.name, [tablet.endpoint], expect: tablet.id)
+                    found.append(Action(id: "show " + key, title: String(format: L("Connect to %@"), tablet.name),
+                                        device: tablet.name, detail: wifi, icon: "wifi", short: connect) {
+                        self.start(tablet.name, [tablet.endpoint], expect: tablet.id, chosen: true)
                     })
                 }
-            } else if connection != "cable" {
-                found.append(Action(id: "pair " + key, title: String(format: L("Pair with %@…"), tablet.name),
-                                    device: tablet.name, detail: wifi, icon: "wifi", short: L("Pair…"), primary: false) {
-                    self.pair(tablet.name, [tablet.endpoint])
+            } else if byWifi {
+                found.append(Action(id: "show " + key, title: String(format: L("Connect to %@"), tablet.name),
+                                    device: tablet.name, detail: wifi, icon: "wifi", short: connect) {
+                    self.start(tablet.name, [tablet.endpoint], expect: nil, chosen: true)
                 })
             }
         }
         if byCable {
-            if !paired.isEmpty {
-                found.append(Action(id: "cable", title: L("Show the desktop over the cable"), device: onCable, detail: cable,
-                                    icon: "cable.connector", short: L("Show the desktop"), run: showOverCable))
-            }
-            found.append(Action(id: "pair cable", title: L("Pair over the cable…"), device: onCable, detail: cable,
-                                icon: "cable.connector", short: L("Pair…"), primary: paired.isEmpty) {
-                self.overCable { self.pair(L("the tablet on the cable"), [$0.endpoint]) }
+            found.append(Action(id: "cable", title: L("Connect over the cable"), device: onCable, detail: cable,
+                                icon: "cable.connector", short: connect) {
+                self.showOverCable(chosen: true)
             })
         }
         return found
@@ -217,34 +214,20 @@ final class Model: ObservableObject {
     }
 
     // -- pairing ---------------------------------------------------------------------
-    private func pair(_ name: String, _ endpoints: [NWEndpoint]) {
-        show(String(format: L("Pairing with %@…"), name))
-        Thread.detachNewThread {
-            do {
-                let (_, tablet) = try Companion.pair(endpoints) { tablet, code in
-                    // On the link's thread; the user compares the code on the main thread.
-                    DispatchQueue.main.sync {
-                        alert(String(format: L("Pair with %@?"), tablet),
-                              String(format: L("Pair only if %@ shows the same code:\n\n%@"), tablet, code),
-                              buttons: [L("Pair"), L("Cancel")])
-                    }
-                }
-                later { self.show(String(format: L("Paired with %@"), tablet)) }
-            } catch is PairingRefused {
-                later { self.show(String(format: L("Not paired with %@"), name)) }
-            } catch {
-                later {
-                    self.show(String(format: L("Could not pair with %@"), name))
-                    alert(String(format: L("Could not pair with %@"), name), L(error.localizedDescription))
-                }
-            }
+    /// On the link's thread; the user compares the code on the main thread.
+    private static func askToPair(_ tablet: String, _ code: String) -> Bool {
+        DispatchQueue.main.sync {
+            alert(String(format: L("Pair with %@?"), tablet),
+                  String(format: L("Pair only if %@ shows the same code:\n\n%@"), tablet, code),
+                  buttons: [L("Pair"), L("Cancel")])
         }
     }
 
     // -- the desktop on the tablet -----------------------------------------------------
-    private func start(_ name: String, _ endpoints: [NWEndpoint], expect: String?, cable: Cable? = nil) {
+    private func start(_ name: String, _ endpoints: [NWEndpoint], expect: String?, cable: Cable? = nil, chosen: Bool = false) {
         guard session == nil else { return }
-        let session = DisplaySession(endpoints: endpoints, expect: expect, cable: cable, mode: mode)
+        let session = DisplaySession(endpoints: endpoints, expect: expect, cable: cable, mode: mode,
+                                     ask: chosen ? Model.askToPair : nil)
         session.onStarted = { [weak self] w, h in self?.show(String(format: L("On %@, %dx%d"), name, w, h)) }
         session.onPaused = { [weak self] paused in self?.show(String(format: L(paused ? "On %@, paused" : "On %@"), name)) }
         session.onStats = { [weak self] in self?.stats = $0 }

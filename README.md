@@ -25,7 +25,8 @@ Screenlet started as a fork of
 - **Touch and S Pen.** A finger moves the pointer the moment it lands,
   clicks when it lifts and drags as soon as it moves; two fingers scroll, a
   two-finger tap right-clicks; the pen sends proximity, pressure and tilt.
-- **Plug and show.** Plugging a paired tablet in shows the desktop on it.
+- **One click.** Connect pairs a new tablet by itself, then shows the desktop on it.
+  An option shows it as soon as a paired tablet is plugged in.
 - **USB cable or network.** The cable needs no developer options on the
   tablet; over Wi-Fi the tablet is found with Bonjour.
 - **Simple, or as precise as you like.** The window asks for a resolution

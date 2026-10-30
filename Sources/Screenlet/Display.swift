@@ -527,6 +527,7 @@ final class DisplaySession {
     private let cable: Cable?
     private var mode: Mode
     private var hevc = false  // the codec negotiated
+    private let ask: ((String, String) -> Bool)?
     private var link: Link?
     private var channel: Channel?
     private var display: POVirtualDisplay?
@@ -540,11 +541,14 @@ final class DisplaySession {
     var onPaused: ((Bool) -> Void)?
     var onStats: ((Streamer.Stats) -> Void)?
 
-    init(endpoints: [NWEndpoint], expect: String?, cable: Cable?, mode: Mode) {
+    /// ask: pairs first with a tablet not paired yet, asking the user; without it, such a
+    /// tablet ends the session.
+    init(endpoints: [NWEndpoint], expect: String?, cable: Cable?, mode: Mode, ask: ((String, String) -> Bool)? = nil) {
         self.endpoints = endpoints
         self.expect = expect
         self.cable = cable
         self.mode = mode
+        self.ask = ask
     }
 
     func start() {
@@ -570,7 +574,7 @@ final class DisplaySession {
     private func run() {
         var failure: Error?
         do {
-            let (link, _, _) = try Companion.connect(endpoints, expect: expect)
+            let (link, _, _) = try Companion.connect(endpoints, expect: expect, ask: ask)
             self.link = link
             defer { link.close() }
             if stopped { return }
