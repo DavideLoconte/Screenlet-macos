@@ -1,0 +1,43 @@
+# Every push and pull request is tested and built into the app, uploaded as
+# the run's artifact. A v* tag also publishes a release with the zip and a cask.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write  # the release, on a tag
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test
+        run: swift test
+
+      - name: Build the app
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [ "v$(cat VERSION)" = "$GITHUB_REF_NAME" ] || { echo "the tag is not v$(cat VERSION)"; exit 1; }
+            # The cask downloads the release's zip.
+            export CASK_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/Screenlet-$(cat VERSION)-macos.zip"
+          fi
+          ./build-app.sh
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: Screenlet-macos
+          path: |
+            dist/Screenlet-*-macos.zip
+            dist/screenlet.rb
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/Screenlet-*-macos.zip dist/screenlet.rb --title "Screenlet for macOS ${GITHUB_REF_NAME}" --notes "Unsigned (ad hoc): see the README to open it the first time."

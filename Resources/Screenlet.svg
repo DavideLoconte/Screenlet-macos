@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7B61FF"/>
+      <stop offset="1" stop-color="#3A1FB8"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.06"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5EE7DF"/>
+      <stop offset="1" stop-color="#4A6CF7"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E6E3F5"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#14063F" flood-opacity="0.45"/>
+    </filter>
+    <filter id="iconshadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <!-- macOS grid: an 824 px rounded square, centred, with its own shadow. -->
+  <g filter="url(#iconshadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  </g>
+  <!-- The computer's display, behind: frosted glass. -->
+  <rect x="200" y="262" width="470" height="320" rx="34" fill="url(#glass)" stroke="#FFFFFF" stroke-opacity="0.85" stroke-width="22"/>
+  <rect x="380" y="582" width="110" height="52" fill="#FFFFFF" fill-opacity="0.55"/>
+  <rect x="320" y="628" width="230" height="24" rx="12" fill="#FFFFFF" fill-opacity="0.7"/>
+  <!-- The screenlet: the tablet in front, its own small screen. -->
+  <g filter="url(#shadow)">
+    <rect x="470" y="430" width="370" height="268" rx="40" fill="url(#body)"/>
+    <rect x="496" y="456" width="318" height="216" rx="20" fill="url(#screen)"/>
+    <!-- A pen stroke on it. -->
+    <path d="M532 628 C 570 560, 610 560, 630 600 S 700 640, 772 520" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round"/>
+  </g>
+</svg>
