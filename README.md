@@ -29,7 +29,8 @@ and [Screenlet for Windows](https://github.com/DavideLoconte/Screenlet-windows).
   clicks when it lifts and drags as soon as it moves; two fingers scroll, a
   two-finger tap right-clicks; the pen sends proximity, pressure and tilt.
 - **One click.** Connect pairs a new tablet by itself, then shows the desktop on it.
-  An option shows it as soon as a paired tablet is plugged in.
+  An option shows it as soon as a paired tablet is plugged in. With two on the cable,
+  each has its own line; one shows the desktop at a time.
 - **USB cable or network.** The cable needs no developer options on the
   tablet; over Wi-Fi the tablet is found with Bonjour.
 - **Simple, or as precise as you like.** The window asks for a resolution

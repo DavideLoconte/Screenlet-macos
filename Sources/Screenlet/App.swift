@@ -18,7 +18,7 @@ final class Model: ObservableObject {
 
     @Published var state = ""
     @Published var tablets: [String: Tablet] = [:]   // Bonjour name -> the tablet
-    @Published var plugged = Cable.present
+    @Published var plugged = Cable.plugged
     @Published var session: DisplaySession?
     @Published var showing: String?   // the tablet showing the desktop
     @Published var minimized = UserDefaults.standard.bool(forKey: "minimized") {
@@ -113,20 +113,29 @@ final class Model: ObservableObject {
         // There is no notification for the cable, so poll it.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let now = self.cable != nil || Cable.present
+            let now = Cable.plugged
             if now == self.plugged { return }
+            let was = self.plugged
             self.plugged = now
-            // Plugged in: the desktop goes to it by itself, once paired.
-            if now && self.autoStart && self.connection != "wifi" && self.session == nil && !Paired.all().isEmpty {
-                self.showOverCable(chosen: false)
+            // Plugged in: the desktop goes to it by itself, once paired. Two to choose
+            // from: that is the user's to say.
+            if now.count == 1 && was.isEmpty && self.autoStart && self.connection != "wifi" && self.session == nil && !Paired.all().isEmpty {
+                self.showOverCable(now[0], chosen: false)
             }
         }
     }
 
+    /// What the window calls a tablet on the cable: with two of a kind, a bit of their keys too.
+    private func shown(_ plug: Cable.Plug) -> String {
+        let name = plug.name.isEmpty ? L("Tablet on the cable") : plug.name
+        return plugged.filter { $0.name == plug.name }.count < 2 ? name : "\(name) (\(plug.key.suffix(4)))"
+    }
+
     /// chosen: by the user, who may then be asked to pair. Never for a tablet merely plugged in.
-    private func showOverCable(chosen: Bool) {
+    private func showOverCable(_ plug: Cable.Plug, chosen: Bool) {
         // No announced id here: any paired tablet will do, and TLS proves which.
-        overCable { self.start(L("the tablet on the cable"), [$0.endpoint], expect: nil, cable: $0, chosen: chosen) }
+        let name = shown(plug)
+        overCable(plug) { self.start(name, [$0.endpoint], expect: nil, cable: $0, chosen: chosen) }
     }
 
     func show(_ text: String) {
@@ -149,7 +158,7 @@ final class Model: ObservableObject {
     }
 
     var actions: [Action] {
-        let wifi = L("Wi-Fi"), cable = L("USB-C cable"), onCable = L("Tablet on the cable")
+        let wifi = L("Wi-Fi"), cable = L("USB-C cable")
         if session != nil {
             return [Action(id: "stop", title: L("Disconnect"), device: showing ?? "", detail: state,
                            icon: "rectangle.on.rectangle", short: L("Disconnect"), primary: false, run: disconnect)]
@@ -158,8 +167,8 @@ final class Model: ObservableObject {
         var found: [Action] = []
         // In automatic mode a plugged-in tablet always uses the cable, whose tail
         // latency is about a tenth of Wi-Fi's. A second tablet on Wi-Fi is not shown.
-        let byCable = plugged && connection != "wifi"
-        let byWifi = connection == "wifi" || (connection == "auto" && !plugged)
+        let byCable = !plugged.isEmpty && connection != "wifi"
+        let byWifi = connection == "wifi" || (connection == "auto" && plugged.isEmpty)
         for (key, tablet) in tablets.sorted(by: { $0.value.name.lowercased() < $1.value.name.lowercased() }) {
             if paired.keys.contains(where: { $0.hasPrefix(tablet.id) }) && !tablet.id.isEmpty {
                 if byWifi {
@@ -176,10 +185,13 @@ final class Model: ObservableObject {
             }
         }
         if byCable {
-            found.append(Action(id: "cable", title: L("Connect over the cable"), device: onCable, detail: cable,
-                                icon: "cable.connector", short: connect) {
-                self.showOverCable(chosen: true)
-            })
+            for plug in plugged {
+                let name = shown(plug)
+                found.append(Action(id: "cable " + plug.key, title: String(format: L("Connect to %@"), name), device: name,
+                                    detail: cable, icon: "cable.connector", short: connect) {
+                    self.showOverCable(plug, chosen: true)
+                })
+            }
         }
         return found
     }
@@ -247,13 +259,17 @@ final class Model: ObservableObject {
 
     /// Calls then(cable) on the main thread once the cable's link is open. It
     /// stays open for pairing and then the desktop.
-    private func overCable(_ then: @escaping (Cable) -> Void) {
-        if let cable { return then(cable) }
+    private func overCable(_ plug: Cable.Plug, _ then: @escaping (Cable) -> Void) {
+        if let cable {
+            if cable.key == plug.key { return then(cable) }
+            cable.close()  // one tablet at a time: the other one is let go
+            self.cable = nil
+        }
         show(L("Opening the link over the cable…"))
         Thread.detachNewThread {
             do {
-                let cable = try Cable()
-                cable.onLost = { _ in later { self.cable = nil } }
+                let cable = try Cable(tablet: plug.key)
+                cable.onLost = { [weak cable] _ in later { if self.cable === cable { self.cable = nil } } }
                 later {
                     self.cable = cable
                     then(cable)
@@ -372,7 +388,7 @@ struct MainView: View {
     @State private var advanced = false
 
     private var tint: Color {
-        model.session != nil ? .green : model.tablets.isEmpty && !model.plugged ? .secondary : .blue
+        model.session != nil ? .green : model.tablets.isEmpty && model.plugged.isEmpty ? .secondary : .blue
     }
 
     var body: some View {

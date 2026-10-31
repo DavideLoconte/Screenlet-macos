@@ -17,11 +17,15 @@ NS_ASSUME_NONNULL_BEGIN
 /// The tablet as a USB accessory (Android Open Accessory). The Mac is the
 /// USB host, with one bulk pipe in each direction.
 @interface POAccessory : NSObject
-/// Whether an Android device of a known maker, or one already in accessory mode, is connected.
-+ (BOOL)tabletPresent;
-/// Opens the accessory, switching the tablet to accessory mode first if needed.
-/// identity is manufacturer, model, description, version, URI and serial. Blocks.
-- (nullable instancetype)initWithIdentity:(NSArray<NSString *> *)identity error:(NSError **)error;
+/// The Android devices of known makers connected, those in accessory mode too: for
+/// each its "key", the same in either mode, and its "name", which may be empty.
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)tablets;
+/// Opens this tablet (nil: the first) as an accessory, switching it to accessory mode
+/// first if needed. identity is manufacturer, model, description, version, URI and
+/// serial. Blocks.
+- (nullable instancetype)initWithTablet:(nullable NSString *)tablet identity:(NSArray<NSString *> *)identity
+                                  error:(NSError **)error;
+@property (readonly) NSString *key;
 /// Reads up to buffer's length. Returns the bytes read, 0 on timeout, -1 on error.
 - (NSInteger)read:(NSMutableData *)buffer timeout:(NSTimeInterval)timeout error:(NSError **)error;
 /// Writes all of data (not copied: it must stay unchanged until this returns),

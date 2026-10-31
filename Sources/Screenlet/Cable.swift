@@ -33,11 +33,20 @@ final class Cable {
     var onDatagram: ((Data) -> Void)?
     var onLost: ((Error) -> Void)?
 
-    static var present: Bool { POAccessory.tabletPresent() }
+    /// A tablet on the cable, whatever it shows itself as for now.
+    struct Plug: Equatable {
+        let key: String
+        let name: String
+    }
 
-    /// Switches the tablet to accessory mode and waits for the app to answer. Blocks.
-    init() throws {
-        accessory = try POAccessory(identity: Cable.identity)
+    /// The tablets connected, those in accessory mode too.
+    static var plugged: [Plug] { POAccessory.tablets().map { Plug(key: $0["key"] ?? "", name: $0["name"] ?? "") } }
+
+    var key: String { accessory.key }
+
+    /// Switches this tablet (nil: the first) to accessory mode and waits for the app to answer. Blocks.
+    init(tablet: String? = nil) throws {
+        accessory = try POAccessory(tablet: tablet, identity: Cable.identity)
         do {
             try hello()
             try listen()

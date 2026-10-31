@@ -9,44 +9,87 @@ static NSError *Error(NSString *message) {
     return [NSError errorWithDomain:@"Screenlet" code:1 userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
-/// The first IOService of class with these properties, or 0. Uses
-/// IOPropertyMatch, because a plain idVendor key only matches in a driver's
+/// A property of service, or of the device above it.
+static id Property(io_service_t service, CFStringRef name) {
+    return CFBridgingRelease(IORegistryEntrySearchCFProperty(service, kIOServicePlane, name, kCFAllocatorDefault,
+                                                             kIORegistryIterateRecursively | kIORegistryIterateParents));
+}
+
+/// Which tablet it is: its serial, or with none where it is plugged in. The same as an
+/// accessory, and the same for its interfaces as for the device.
+static NSString *Key(io_service_t service) {
+    NSString *serial = Property(service, CFSTR("USB Serial Number"));
+    if ([serial isKindOfClass:NSString.class] && serial.length) return serial;
+    NSNumber *location = Property(service, CFSTR("locationID"));
+    return [location isKindOfClass:NSNumber.class] ? location.stringValue : @"";
+}
+
+/// The first IOService of class with these properties and this key (nil: any), or 0.
+/// Uses IOPropertyMatch, because a plain idVendor key only matches in a driver's
 /// personality.
-static io_service_t First(const char *class, NSDictionary *properties) {
+static io_service_t First(const char *class, NSDictionary *properties, NSString *key) {
     CFMutableDictionaryRef matching = IOServiceMatching(class);
     CFDictionarySetValue(matching, CFSTR(kIOPropertyMatchKey), (__bridge CFDictionaryRef)properties);
-    return IOServiceGetMatchingService(kIOMainPortDefault, matching);  // consumes matching
+    io_iterator_t all = 0;
+    if (IOServiceGetMatchingServices(kIOMainPortDefault, matching, &all) != KERN_SUCCESS) return 0;  // consumes matching
+    io_service_t found = 0, each;
+    while (!found && (each = IOIteratorNext(all))) {
+        if (!key || [Key(each) isEqualToString:key]) found = each;
+        else IOObjectRelease(each);
+    }
+    IOObjectRelease(all);
+    return found;
 }
 
-static io_service_t AccessoryDevice(void) {
-    return First("IOUSBHostDevice", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D01})
-        ?: First("IOUSBHostDevice", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D00});
+static io_service_t AccessoryDevice(NSString *key) {
+    return First("IOUSBHostDevice", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D01}, key)
+        ?: First("IOUSBHostDevice", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D00}, key);
 }
 
-static io_service_t AccessoryInterface(void) {
-    return First("IOUSBHostInterface", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D01, @"bInterfaceNumber": @0})
-        ?: First("IOUSBHostInterface", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D00, @"bInterfaceNumber": @0});
+static io_service_t AccessoryInterface(NSString *key) {
+    return First("IOUSBHostInterface", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D01, @"bInterfaceNumber": @0}, key)
+        ?: First("IOUSBHostInterface", @{@"idVendor": @(kGoogle), @"idProduct": @0x2D00, @"bInterfaceNumber": @0}, key);
 }
 
 // Android tablets' makers: Samsung, Google, Lenovo, Xiaomi, OnePlus, Motorola,
-// Huawei, OPPO/realme, Honor, Amazon, Asus, Sony, TCL, Nothing.
+// Huawei, OPPO/realme, Honor, Amazon, Asus, Sony, TCL, Nothing. Then the chips'
+// makers, whose ids smaller brands keep (a Bigme is MediaTek's): MediaTek,
+// Qualcomm, Unisoc, Rockchip.
 static const uint16_t kAndroidVendors[] = {0x04E8, 0x18D1, 0x17EF, 0x2717, 0x2A70, 0x22B8, 0x12D1, 0x22D9,
-                                           0x339B, 0x1949, 0x0B05, 0x0FCE, 0x1BBB, 0x2B0E};
+                                           0x339B, 0x1949, 0x0B05, 0x0FCE, 0x1BBB, 0x2B0E,
+                                           0x0E8D, 0x05C6, 0x1782, 0x2207};
 
-/// A device of one of those makers, not one already in accessory mode
-/// (Google's 0x2D00-0x2D05, which AccessoryDevice finds).
-static io_service_t AndroidDevice(void) {
+/// Each device of one of those makers, those in accessory mode only if asked for
+/// (Google's 0x2D00-0x2D05), until each answers YES.
+static void EachDevice(BOOL accessories, BOOL (^each)(io_service_t device)) {
     for (size_t i = 0; i < sizeof kAndroidVendors / sizeof kAndroidVendors[0]; i++) {
-        io_service_t found = First("IOUSBHostDevice", @{@"idVendor": @(kAndroidVendors[i])});
-        if (!found) continue;
-        NSNumber *product = CFBridgingRelease(IORegistryEntryCreateCFProperty(found, CFSTR("idProduct"), kCFAllocatorDefault, 0));
-        if (kAndroidVendors[i] == kGoogle && product.unsignedIntValue >= 0x2D00 && product.unsignedIntValue <= 0x2D05) {
+        CFMutableDictionaryRef matching = IOServiceMatching("IOUSBHostDevice");
+        CFDictionarySetValue(matching, CFSTR(kIOPropertyMatchKey), (__bridge CFDictionaryRef)@{@"idVendor": @(kAndroidVendors[i])});
+        io_iterator_t all = 0;
+        if (IOServiceGetMatchingServices(kIOMainPortDefault, matching, &all) != KERN_SUCCESS) continue;
+        BOOL done = NO;
+        io_service_t found;
+        while (!done && (found = IOIteratorNext(all))) {
+            NSNumber *product = CFBridgingRelease(IORegistryEntryCreateCFProperty(found, CFSTR("idProduct"), kCFAllocatorDefault, 0));
+            BOOL accessory = kAndroidVendors[i] == kGoogle && product.unsignedIntValue >= 0x2D00 && product.unsignedIntValue <= 0x2D05;
+            if (accessories || !accessory) done = each(found);
             IOObjectRelease(found);
-            continue;
         }
-        return found;
+        IOObjectRelease(all);
+        if (done) return;
     }
-    return 0;
+}
+
+/// A device of one of those makers with this key, not one already in accessory mode.
+static io_service_t AndroidDevice(NSString *key) {
+    __block io_service_t found = 0;
+    EachDevice(NO, ^BOOL(io_service_t device) {
+        if (![Key(device) isEqualToString:key]) return NO;
+        IOObjectRetain(device);
+        found = device;
+        return YES;
+    });
+    return found;
 }
 
 static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index, uint16_t length) {
@@ -60,15 +103,28 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
     NSUInteger _packet;
 }
 
-+ (BOOL)tabletPresent {
-    io_service_t found = AccessoryDevice() ?: AndroidDevice();
-    if (found) IOObjectRelease(found);
-    return found != 0;
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)tablets {
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *found = [NSMutableArray array];
+    EachDevice(YES, ^BOOL(io_service_t device) {
+        NSString *key = Key(device), *name = Property(device, CFSTR("USB Product Name"));
+        if ([found indexOfObjectPassingTest:^BOOL(NSDictionary *t, NSUInteger i, BOOL *stop) { return [t[@"key"] isEqual:key]; }] == NSNotFound) {
+            [found addObject:@{@"key": key, @"name": [name isKindOfClass:NSString.class] ? name : @""}];
+        }
+        return NO;
+    });
+    [found sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"name" ascending:YES],
+                                  [NSSortDescriptor sortDescriptorWithKey:@"key" ascending:YES]]];
+    return found;
 }
 
-- (instancetype)initWithIdentity:(NSArray<NSString *> *)identity error:(NSError **)error {
+- (instancetype)initWithTablet:(NSString *)tablet identity:(NSArray<NSString *> *)identity error:(NSError **)error {
     if (!(self = [super init])) return nil;
-    io_service_t device = AccessoryDevice();
+    _key = tablet ?: POAccessory.tablets.firstObject[@"key"];
+    if (!_key) {
+        if (error) *error = Error(@"no tablet on the cable");
+        return nil;
+    }
+    io_service_t device = AccessoryDevice(_key);
     if (device) {
         // Still an accessory from an earlier session, possibly mid-frame. Reset
         // it so both ends start clean. Android then either leaves accessory mode
@@ -83,8 +139,8 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
         // It comes back shortly, either still as the accessory or as itself.
         for (int tries = 0; tries < 50 && !device; tries++) {
             [NSThread sleepForTimeInterval:0.1];
-            if (tries >= 5 && (device = AccessoryDevice())) break;
-            io_service_t android = tries >= 5 ? AndroidDevice() : 0;
+            if (tries >= 5 && (device = AccessoryDevice(_key))) break;
+            io_service_t android = tries >= 5 ? AndroidDevice(_key) : 0;
             if (android) {
                 IOObjectRelease(android);
                 break;
@@ -98,7 +154,7 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
 
 /// Asks the tablet to switch to accessory mode and waits for it to reappear.
 - (BOOL)switchTablet:(NSArray<NSString *> *)identity error:(NSError **)error {
-    io_service_t service = AndroidDevice();
+    io_service_t service = AndroidDevice(_key);
     if (!service) {
         if (error) *error = Error(@"no tablet on the cable");
         return NO;
@@ -136,7 +192,7 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
     NSLog(@"usb: asked the tablet to be Screenlet's accessory");
     for (NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:kSwitchWait]; deadline.timeIntervalSinceNow > 0;) {
         [NSThread sleepForTimeInterval:0.3];
-        io_service_t found = AccessoryDevice();
+        io_service_t found = AccessoryDevice(_key);
         if (found) {
             IOObjectRelease(found);
             return YES;
@@ -150,9 +206,9 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
 /// macOS has not.
 - (BOOL)openInterface:(NSError **)error {
     io_service_t service = 0;
-    for (int tries = 0; tries < 20 && !(service = AccessoryInterface()); tries++) {
+    for (int tries = 0; tries < 20 && !(service = AccessoryInterface(_key)); tries++) {
         if (tries == 0) {
-            io_service_t device = AccessoryDevice();
+            io_service_t device = AccessoryDevice(_key);
             IOUSBHostDevice *open = device ? [[IOUSBHostDevice alloc] initWithIOService:device options:0 queue:nil
                                                                                  error:nil interestHandler:nil] : nil;
             [open configureWithValue:1 matchInterfaces:YES error:nil];

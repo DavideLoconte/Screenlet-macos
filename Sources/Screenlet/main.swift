@@ -8,13 +8,16 @@ if arguments.count >= 2, ["--show-cable", "--show-wifi"].contains(arguments[1]) 
     // found, and logs the latency every 2 s. Options: "mirror" (the main
     // display), "hevc" or "h264", a priority, "30" or "60" (Hz; the tablet's
     // otherwise), "native", a resolution, "pattern" (a moving test pattern on
-    // the tablet's display, the same load every run) or "measure" (fidelity:
-    // the Mac decodes its own stream and logs its PSNR). bench.sh runs them.
+    // the tablet's display, the same load every run), "measure" (fidelity:
+    // the Mac decodes its own stream and logs its PSNR) or "serial=SERIAL" (which
+    // tablet on the cable; the first otherwise). bench.sh runs them.
     let seconds = arguments.count > 2 ? Double(arguments[2]) ?? 20 : 20
     var mode = DisplaySession.Mode()
     var pattern = false
+    var tablet: String?
     for word in arguments.dropFirst(3) {
         switch word {
+        case _ where word.hasPrefix("serial="): tablet = String(word.dropFirst("serial=".count))
         case "mirror": mode.mirror = CGMainDisplayID()
         case "hevc": mode.codec = "hevc"
         case "h264": mode.codec = "avc"
@@ -47,9 +50,10 @@ if arguments.count >= 2, ["--show-cable", "--show-wifi"].contains(arguments[1]) 
         }
     }
     if arguments[1] == "--show-cable" {
+        let chosen = tablet
         Thread.detachNewThread {
             do {
-                let cable = try Cable()
+                let cable = try Cable(tablet: chosen)
                 later { show(cable.endpoint, expect: nil, cable: cable) }
             } catch {
                 log("failed:", error.localizedDescription)
