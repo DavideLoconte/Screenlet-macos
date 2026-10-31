@@ -130,6 +130,26 @@ it off. While you use the tablet, `sudo ifconfig awdl0 down` turns it off
 
 ## To do
 
+- The list of tablets on the cable was written without a Mac at hand: CI builds and tests
+  it, nothing more. To try here:
+  - With one tablet: its own name in the window and the menu, not an empty line, Connect,
+    Disconnect, and it still works with the desktop shown on plugging in.
+  - That it is the same tablet as an accessory: `USB Serial Number` and `USB Product Name`
+    read from IOKit on the device, and through its parents on the accessory's interface.
+    If not, Connect ends in "the accessory has no interface" or the tablet stays listed twice.
+  - With two tablets: a line each, with their names, and Connect shows the desktop on the
+    right one; `--show-cable 20 serial=SERIAL` likewise.
+  - With two, Connect on the other one after a session: the first goes back to what it
+    was and the second takes over, with one session at a time.
+  - With two, nothing starts by itself on plugging in.
+  - Two of the same model show the last digits of their serials.
+  - That no other device of those makers shows as a tablet: the list has grown to chip
+    makers' ids, and here, unlike on Linux and Windows, nothing tells a tablet from them.
+    A USB stick from Samsung would get a line of its own.
+  - A tablet with MediaTek's USB id, as a Bigme HiBreak Pro: seen, the cable and the
+    picture. Its decoder needed the companion's fix for its largest size.
+  - Whether the bitrate falls to its lowest on such a tablet while the whole picture
+    moves, as on Windows, though the cable has room to spare.
 - HiDPI from the tablet's density. Today it is 2x from 2560 pixels wide and 1x below,
   so a 2000 wide tablet gets none.
 - HiDPI as a choice in the window, with sizes between 1x and 2x.
