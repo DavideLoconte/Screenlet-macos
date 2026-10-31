@@ -5,7 +5,7 @@
 Use an Android tablet (made for the Samsung Galaxy Tab and its S Pen) as a
 second display for your Mac, over Wi-Fi or a USB-C cable, with the lowest
 latency it can get. The tablet runs
-[Screenlet Companion](https://github.com/DavideLoconte/Screenlet-Companion);
+[Screenlet Companion](https://github.com/DavideLoconte/Screenlet-companion);
 the two speak the [Screenlet protocol](PROTOCOL.md).
 
 Written natively in Swift with a little Objective-C and no dependencies.
@@ -13,6 +13,9 @@ Screenlet started as a fork of
 [Plus One](https://github.com/GabrieleSantangelo/PlusOne).
 
 **A proof of concept, not ready for daily use.** The version is in [VERSION](VERSION).
+
+The other computers are [Screenlet for GNOME](https://github.com/DavideLoconte/Screenlet-linux)
+and [Screenlet for Windows](https://github.com/DavideLoconte/Screenlet-windows).
 
 ## Features
 
@@ -124,12 +127,21 @@ on the same tablet the 90th percentile went from some 95 ms to 30–45 ms with
 it off. While you use the tablet, `sudo ifconfig awdl0 down` turns it off
 (AirDrop and Handoff with it) until `sudo ifconfig awdl0 up` or a restart.
 
-## Future work
+## To do
 
-- Screenlet for Linux and Windows, speaking the same protocol.
+- HiDPI from the tablet's density. Today it is 2x from 2560 pixels wide and 1x below,
+  so a 2000 wide tablet gets none.
+- HiDPI as a choice in the window, with sizes between 1x and 2x.
+- Falling back to 1x if a macOS update refuses the private `hiDPI` flag of
+  `CGVirtualDisplay`.
 - Wi-Fi Direct: macOS has no API for it, so the tablet would host a P2P
   group the Mac joins as a Wi-Fi network (losing its own Wi-Fi meanwhile).
 
 ## License
 
 MIT, like Plus One. See [LICENSE](LICENSE).
+
+## AI disclosure
+
+Much of this code was written by Claude, Anthropic's AI model, through Claude Code, under
+the author's direction. The author chose what to build and tested it on real hardware.

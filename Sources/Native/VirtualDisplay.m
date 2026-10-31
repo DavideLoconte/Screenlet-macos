@@ -50,6 +50,7 @@
     }
     if (!_display) return nil;
     CGVirtualDisplaySettings *settings = [[CGVirtualDisplaySettings alloc] init];
+    // TODO: a private flag: check it on each macOS, and fall back to 1x when refused.
     settings.hiDPI = points.width < pixels.width ? 1 : 0;
     // The tablet's refresh rate (and 60 as a fallback mode): WindowServer
     // composes the display that often, so a change waits less to be captured.

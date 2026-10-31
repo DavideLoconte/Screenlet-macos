@@ -78,6 +78,8 @@ enum Sizes {
         return sizes.min { abs($0.0 * $0.1 - reference) < abs($1.0 * $1.1 - reference) }!
     }
 
+    // TODO: HiDPI from the tablet's density, not its width alone: a 2000 wide tablet gets none.
+    // TODO: HiDPI as a choice in the window, with sizes between 1x and 2x.
     static func scale(_ size: (Int, Int)) -> Int { size.0 >= hidpiWidth ? 2 : 1 }
 
     /// The size the setting asks for on this tablet, or the automatic size if
