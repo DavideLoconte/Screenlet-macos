@@ -2,10 +2,7 @@ import CoreMedia
 import Foundation
 import VideoToolbox
 
-/// Measures how faithful the stream is. Every encoded frame is decoded here,
-/// as the tablet does, and one in `every` is compared with the captured frame
-/// by the PSNR of its luma. Above 50 dB the difference is invisible, below 30
-/// it shows. Off unless enabled with "measure".
+/// Evaluates stream reconstruction fidelity by decompressing encoded samples and calculating luma PSNR.
 final class Fidelity {
     static var enabled = false
     static let every = 4
@@ -16,14 +13,14 @@ final class Fidelity {
     private let lock = NSLock()
     private var scores: [Double] = []
 
-    /// Called on VideoToolbox's thread with an encoded frame and its source image.
+    /// Ingests an encoded sample buffer and corresponding raw source pixel buffer for evaluation.
     func encoded(_ sample: CMSampleBuffer, from image: CVPixelBuffer) {
         count += 1
         let source = count % Fidelity.every == 0 ? Fidelity.luma(image) : nil
         queue.async { [self] in decode(sample, against: source) }
     }
 
-    /// The mean and lowest PSNR since the last call, or nil if there are none.
+    /// Returns the mean and minimum PSNR scores accumulated since the previous call.
     func take() -> (Double, Double)? {
         lock.lock()
         defer { lock.unlock() }
@@ -54,7 +51,7 @@ final class Fidelity {
         }
     }
 
-    /// The luma plane without row padding: bytes, width, height and row stride.
+    /// Extracts a packed 8-bit luma plane without row padding from a pixel buffer.
     static func luma(_ image: CVPixelBuffer) -> (Data, Int, Int, Int) {
         CVPixelBufferLockBaseAddress(image, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
@@ -68,7 +65,7 @@ final class Fidelity {
         return (out, width, height, width)
     }
 
-    /// PSNR in dB of b against a, both 8-bit and the same size. 100 when identical.
+    /// Computes the Peak Signal-to-Noise Ratio (PSNR) in decibels between two luma planes.
     static func psnr(_ a: Data, _ b: Data, width: Int, height: Int, stride: Int) -> Double {
         guard a.count == b.count, width * height > 0 else { return 0 }
         var sum: UInt64 = 0

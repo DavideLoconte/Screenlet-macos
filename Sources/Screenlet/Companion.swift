@@ -3,10 +3,10 @@ import Foundation
 import Network
 import Security
 
-/// The companion protocol (PROTOCOL.md): TLS 1.3 with a self-signed
-/// certificate on each side, length-framed JSON messages, and pairing by a
-/// six-digit code shown on both screens. The identity and paired tablets
-/// are stored in ~/.config/screenlet/companion.
+/// Constants and cryptographic utilities implementing the host-companion control protocol.
+///
+/// Provides length-framed JSON message serialization, mutual TLS 1.3 authentication,
+/// SHA-256 fingerprint generation, and 6-digit numeric comparison SAS pairing.
 enum Companion {
     static let protocolVersion = 1
     static let appPort: UInt16 = 47236
@@ -46,8 +46,7 @@ enum Companion {
         return out
     }
 
-    /// The six-digit code from both certificates (DER, in either order) and both
-    /// nonces. The Android app computes the same.
+    /// Derives the 6-digit numeric SAS pairing code from mutual certificates and nonces.
     static func pairingCode(_ a: Data, _ b: Data, ours: Data, theirs: Data) -> String {
         let (first, second) = a.lexicographicallyPrecedes(b) ? (a, b) : (b, a)
         let digest = sha256(first, second, ours, theirs)
@@ -55,7 +54,7 @@ enum Companion {
         return String(format: "%06d", value % 1_000_000)
     }
 
-    /// The app's commitment to its nonce, sent before it sees the computer's.
+    /// Computes a cryptographic hash commitment over the nonce and certificates.
     static func commitment(nonce: Data, appCert: Data, pcCert: Data) -> String {
         hex(sha256(nonce, appCert, pcCert))
     }
@@ -63,8 +62,7 @@ enum Companion {
     static func fingerprint(_ der: Data) -> String { hex(sha256(der)) }
 }
 
-/// This Mac's certificate and key, created with openssl on first use (EC P-256,
-/// self-signed) and handed to TLS as an in-memory identity.
+/// Manages the host TLS identity backed by a self-signed EC P-256 key pair.
 final class Identity {
     let certificate: Data     // DER
     let identity: SecIdentity
@@ -119,8 +117,7 @@ final class Identity {
     }
 }
 
-/// The paired tablets, stored in paired.json as {fingerprint: {"name": ...}}.
-/// Unknown fields are preserved.
+/// Persistent registry of paired tablet devices keyed by certificate fingerprint.
 enum Paired {
     static let url = Companion.config.appendingPathComponent("paired.json")
     private static let lock = NSLock()
@@ -139,9 +136,8 @@ enum Paired {
         return out
     }
 
-    /// {fingerprint: name}.
+    /// Returns a dictionary mapping all paired device fingerprints to their display names.
     static func all() -> [String: String] { entries().compactMapValues { $0["name"] as? String } }
-
     static func add(_ fp: String, name: String, p2p: [String: Any]? = nil) {
         lock.lock()
         defer { lock.unlock() }
@@ -156,8 +152,7 @@ enum Paired {
     }
 }
 
-/// A TLS link to the app carrying framed messages (a 4-byte big-endian length
-/// and a JSON header). Its calls block, so use it from its own thread.
+/// Synchronous TLS control link carrying length-delimited JSON messages.
 final class Link {
     let connection: NWConnection
     private(set) var peerCertificate: Data?
@@ -214,7 +209,7 @@ final class Link {
         peerCertificate = queue.sync { peer }
     }
 
-    /// The app's address on this link, where the display's packets go.
+    /// Remote host IP address string extracted from the active connection path.
     var remoteHost: String? {
         if case .hostPort(let host, _)? = connection.currentPath?.remoteEndpoint {
             switch host {
@@ -259,7 +254,7 @@ final class Link {
         return try result.get()
     }
 
-    /// Reads the next message, up to limit bytes.
+    /// Reads and parses the next length-delimited JSON message header from the stream.
     func receive(limit: Int = Companion.maxHeader, timeout: TimeInterval = Companion.ioTimeout) throws -> [String: Any] {
         let length = try exactly(4, timeout: timeout).withUnsafeBytes { UInt32(bigEndian: $0.loadUnaligned(as: UInt32.self)) }
         guard length > 0, length <= limit else { throw Failure("bad header length \(length)") }
@@ -271,7 +266,7 @@ final class Link {
         return header
     }
 
-    /// Delivers the next message to done on the link's queue, with no timeout.
+    /// Asynchronously awaits and delivers the next incoming message on the internal queue.
     func receiveNext(_ done: @escaping (Result<[String: Any], Error>) -> Void) {
         connection.receive(minimumIncompleteLength: 4, maximumLength: 4) { [connection] data, _, _, error in
             guard let data, data.count == 4 else { return done(.failure(error ?? Closed())) }
@@ -309,10 +304,7 @@ struct Refused: LocalizedError {
 }
 
 extension Companion {
-    /// Opens a paired link to the app at endpoint and returns the link, the
-    /// tablet's name and its fingerprint. Pass ask(name, code) to pair with a new
-    /// tablet; without it an unpaired tablet throws PairingRefused. expect is the
-    /// id the app announced, and a paired tablet must then present its certificate.
+    /// Establishes a TLS control connection to the endpoint and executes protocol handshake and pairing.
     static func handshake(_ endpoint: NWEndpoint, expect: String? = nil,
                           ask: ((String, String) -> Bool)? = nil) throws -> (Link, String, String) {
         let ours = try Identity.shared.get().certificate
@@ -370,7 +362,7 @@ extension Companion {
         }
     }
 
-    /// The first endpoint that answers correctly.
+    /// Attempts handshake sequentially across candidate endpoints until one succeeds.
     static func connect(_ endpoints: [NWEndpoint], expect: String?,
                         ask: ((String, String) -> Bool)? = nil) throws -> (Link, String, String) {
         var last: Error = Failure("no address for the tablet")
@@ -389,7 +381,7 @@ extension Companion {
         throw last
     }
 
-    /// Pairs with the app at endpoints and returns its fingerprint and name. Blocks.
+    /// Connects to candidate endpoints, performs interactive pairing, and closes the control link.
     static func pair(_ endpoints: [NWEndpoint], ask: @escaping (String, String) -> Bool) throws -> (String, String) {
         let (link, name, fp) = try connect(endpoints, expect: nil, ask: ask)
         try? link.send(["type": "bye"])

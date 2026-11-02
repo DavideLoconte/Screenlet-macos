@@ -2,8 +2,7 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-/// Posts the tablet's fingers and pen as CGEvents on the display. macOS does
-/// not accept injected touches, so a finger drives the pointer and two scroll.
+/// Injects pointer, touch scrolling, and tablet digitizer events into macOS using CoreGraphics CGEvents.
 final class Monitor {
     let display: CGDirectDisplayID
     let size: (Int, Int)
@@ -26,7 +25,7 @@ final class Monitor {
         AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): prompt] as CFDictionary)
     }
 
-    /// Converts a point in stream pixels to global display points.
+    /// Translates stream pixel coordinates to global display desktop coordinates.
     static func toScreen(_ bounds: CGRect, _ size: (Int, Int), _ x: Double, _ y: Double) -> CGPoint {
         CGPoint(x: bounds.minX + x * bounds.width / Double(size.0), y: bounds.minY + y * bounds.height / Double(size.1))
     }
@@ -63,7 +62,7 @@ final class Monitor {
 
     enum Phase: Int64 { case began = 1, changed = 2, ended = 4 }
 
-    /// A continuous scroll by dx, dy pixels, as a trackpad's: the content follows the fingers.
+    /// Posts a continuous trackpad scroll gesture event with relative delta offsets.
     func scroll(_ dx: Double, _ dy: Double, _ phase: Phase) {
         if quiet { return record("scroll \(phase)") }
         guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
@@ -74,7 +73,7 @@ final class Monitor {
         event.post(tap: .cghidEventTap)
     }
 
-    /// The pen coming near (or going): apps that read tablets learn it is a pen, or the eraser.
+    /// Posts a tablet proximity event indicating pen or eraser engagement.
     func proximity(_ entering: Bool, eraser: Bool) {
         if quiet { return record(entering ? "near" : "away") }
         guard let event = CGEvent(source: nil) else { return }
@@ -91,8 +90,7 @@ final class Monitor {
     }
 }
 
-/// The S Pen as tablet events, with pressure and tilt for apps that read them
-/// and plain pointer events for the rest. The barrel button is the right button.
+/// Translates S Pen digitizer reports into pressure, tilt, and button events.
 final class Pen {
     static let tip: UInt8 = 0x01, barrel: UInt8 = 0x02, eraser: UInt8 = 0x08, inRange: UInt8 = 0x10
     static let axisMax = 32767.0, pressureMax = 4096.0
@@ -102,7 +100,7 @@ final class Pen {
 
     init(monitor: Monitor) { self.monitor = monitor }
 
-    /// One pen report: bits, x, y and pressure (u16, little-endian), then tilt x and y (s8).
+    /// Processes an individual binary pen report containing position, pressure, and tilt data.
     func report(_ r: UnsafeRawBufferPointer) {
         guard r.count >= 9 else { return }
         func u16(_ at: Int) -> Double { Double(UInt16(r[at]) | UInt16(r[at + 1]) << 8) }
@@ -127,6 +125,7 @@ final class Pen {
 
     var near: Bool { bits & Pen.inRange != 0 }
 
+    /// Releases active pen buttons and proximity state.
     func close() {
         if bits & Pen.tip != 0 { monitor.button(.left, pressed: false) }
         if bits & Pen.barrel != 0 { monitor.button(.right, pressed: false) }
@@ -135,11 +134,10 @@ final class Pen {
     }
 }
 
-/// Turns the tablet's INPUT packets into pointer events, with no wait on a
-/// finger: it moves the pointer the moment it lands, presses the button the
-/// moment it moves (a drag), when it lifts (a click) or after holding still
-/// a moment. Two fingers scroll, and a two-finger tap is a right click.
-/// Called only from the streamer's receiving thread.
+/// Translates binary INPUT packets into pointer motion, click gestures, and scroll events.
+///
+/// Dispatches pointer movement immediately upon contact, initiates drags upon motion,
+/// synthesizes clicks on release or timed holds, and maps two-finger contacts to scrolling and secondary clicks.
 final class Input {
     static let touchMax = 65535.0, maxFingers = 10, penSample = 9
     static let silence = 0.4       // seconds; the app repeats its state every 0.1 s
@@ -173,7 +171,10 @@ final class Input {
         return true
     }
 
-    /// Handles an INPUT packet. Returns false if it is malformed.
+    /// Decodes an incoming binary INPUT packet and dispatches touch and stylus events.
+    ///
+    /// - Parameter body: Raw packet payload data.
+    /// - Returns: `true` if the packet was successfully decoded; otherwise `false`.
     func packet(_ body: Data) -> Bool {
         body.withUnsafeBytes { b in
             guard b.count >= 3 else { return false }
@@ -261,8 +262,10 @@ final class Input {
         }
     }
 
-    /// Called every few ms while busy: presses a finger held still, and lifts
-    /// everything when the tablet has gone quiet.
+    /// Evaluates hold-to-drag thresholds and releases stale contacts upon silence.
+    ///
+    /// Invoked periodically while active to trigger pending press states and release resources
+    /// when no packet updates have been received within the silence window.
     func check() {
         if case .one(let id, let at, let since, false) = touch, clock() - since >= Input.hold {
             monitor.pointerMove(at.0, at.1)
@@ -273,6 +276,7 @@ final class Input {
         close()
     }
 
+    /// Terminates active touch and pen interactions and releases all pressed pointer states.
     func close() {
         if case .two(_, _, _, _, true) = touch { monitor.scroll(0, 0, .ended) }
         touch = .idle

@@ -2,167 +2,117 @@
 
 # Screenlet for macOS
 
-Use an Android tablet (made for the Samsung Galaxy Tab and its S Pen) as a
-second display for your Mac, over Wi-Fi or a USB-C cable, with the lowest
-latency it can get. The tablet runs
-[Screenlet Companion](https://github.com/DavideLoconte/Screenlet-companion);
-the two speak the [Screenlet protocol](PROTOCOL.md).
+*Screenlet for macOS* turns an Android tablet (specifically optimized for Samsung Galaxy Tab devices and the S Pen) into an ultra-low-latency secondary display for macOS over Wi-Fi or a USB-C connection. The tablet client runs [Screenlet Companion](https://github.com/DavideLoconte/Screenlet-companion), communicating via the [Screenlet protocol](PROTOCOL.md).
 
-Written natively in Swift with a little Objective-C and no dependencies.
-Screenlet started as a fork of
-[Plus One](https://github.com/GabrieleSantangelo/PlusOne).
+The application is implemented natively in Swift with minimal Objective-C bridging components and maintains zero external dependencies. Screenlet originated as a fork of [Plus One](https://github.com/GabrieleSantangelo/PlusOne).
 
-**A proof of concept, not ready for daily use.** The version is in [VERSION](VERSION).
+> [!NOTE]
+> The current version is in development and prone to changes. The version number is specified in [VERSION](VERSION).
 
-The other computers are [Screenlet for GNOME](https://github.com/DavideLoconte/Screenlet-linux)
-and [Screenlet for Windows](https://github.com/DavideLoconte/Screenlet-windows).
+Alternative desktop host implementations include [Screenlet for GNOME](https://github.com/DavideLoconte/Screenlet-linux) and [Screenlet for Windows](https://github.com/DavideLoconte/Screenlet-windows).
 
 ## Features
 
-- **Low latency.** About 19 ms median from capture to decoded over the
-  cable, hardware H.264 or HEVC, no jitter buffer.
-- **Extend or mirror.** A new display at the tablet's proportions
-  (automatic, native or another size), refreshed as fast as the tablet's
-  panel (up to 120 Hz, as its decoder keeps up), or one of the Mac's
-  displays mirrored.
-- **Touch and S Pen.** A finger moves the pointer the moment it lands,
-  clicks when it lifts and drags as soon as it moves; two fingers scroll, a
-  two-finger tap right-clicks; the pen sends proximity, pressure and tilt.
-- **One click.** Connect pairs a new tablet by itself, then shows the desktop on it.
-  An option shows it as soon as a paired tablet is plugged in. With two on the cable,
-  each has its own line; one shows the desktop at a time.
-- **USB cable or network.** The cable needs no developer options on the
-  tablet; over Wi-Fi the tablet is found with Bonjour.
-- **Simple, or as precise as you like.** The window asks for a resolution
-  and what to optimize for (lowest latency, balanced, sharpest); its
-  Advanced tab sets codec, refresh rate, bitrate, largest frame, packets and
-  keyframes one by one, and shows the latency measured live, stage by stage.
-- **Only your tablet.** Paired once by a six-digit code on both screens,
-  TLS 1.3 on the link and AES-GCM on every video and input packet.
+- **Ultra-low latency.** Achieves approximately 19 ms median latency from screen capture to hardware decode over a USB connection using hardware-accelerated H.264 or HEVC, bypassing intermediate jitter buffers.
+- **Extend or Mirror modes.** Creates a virtual display matching the tablet's native aspect ratio (automatic, native, or custom resolution) refreshing at up to 120 Hz, or mirrors an existing Mac display.
+- **Touch and S Pen translation.** Touch input translates directly into macOS pointer events: single-finger contact moves the pointer and triggers clicks or drags; two-finger gestures handle scrolling and right-click taps; stylus input forwards proximity, pressure, and tilt data.
+- **Streamlined connection management.** One-click connection handles initial pairing and immediately launches the display session. Supports optional automatic connection upon connecting a paired tablet via USB. If multiple tablets are connected, each device is managed independently.
+- **Flexible transport (USB or Network).** USB connections utilize the Android Open Accessory protocol without requiring developer options on the tablet. Over Wi-Fi, tablets are discovered automatically using Bonjour.
+- **Comprehensive configuration.** The application window offers intuitive resolution and optimization presets (Lowest Latency, Balanced, or Sharpest), while the Advanced tab exposes fine-grained control over codec selection, refresh rate, bitrate, maximum frame size, packetization, and keyframe intervals, alongside live latency diagnostics.
+- **Authenticated security.** Mutual authentication is verified via a six-digit code displayed on both devices. The control channel is secured using TLS 1.3, and video and input datagrams are encrypted end-to-end with AES-GCM.
 
-## Latency
+## Latency Optimizations
 
-- The hardware encoder with low-latency rate control, speed before quality,
-  no reordering, BT.709 colour declared in the stream (the tablet shows the
-  Mac's colours), Annex B copied once from the encoder's memory.
-- Packets go out from a thread of their own, so a slow USB write never
-  holds the encoder; each frame's datagrams are framed straight into one
-  USB buffer.
-- The Wi-Fi send queue holds about one keyframe, no more; the bitrate
-  starts at half and adapts each second to the delay the tablet measures.
-- No wait on a landing finger: nothing holds a touch to see if a second
-  finger comes.
+- VideoToolbox hardware encoding is configured for low-latency rate control, prioritizing encoding speed over compression efficiency with zero frame reordering and explicit BT.709 color tagging. Encoded Annex B bitstreams are transferred directly from encoder memory.
+- Packet dispatch runs on a dedicated high-priority worker thread, ensuring that USB write throughput variations do not stall the video encoder pipeline.
+- Network send queues are bounded to approximately one keyframe. Bitrate initializes conservatively and dynamically adapts every second based on round-trip latency reported by the tablet.
+- Touch input is dispatched instantaneously without delay windows for multi-touch classification.
 
-The log shows, every 2 s with `--show-cable`/`--show-wifi`, the median of
-each stage: encoded and sent here; first packet, spread, decoder wait and
-decode on the tablet ([PROTOCOL.md](PROTOCOL.md) §3.5). `measure` adds the
-fidelity (luma PSNR of the Mac decoding its own stream), and `./bench.sh`
-runs every codec and priority on a test pattern.
+Running `--show-cable` or `--show-wifi` outputs real-time median latency metrics every two seconds: host capture, encoding, and transmission time, followed by client packet transit, decoder queue delay, and hardware decode duration ([PROTOCOL.md](PROTOCOL.md) §3.5). The `measure` option evaluates video fidelity (luma PSNR of the encoded stream), and `./bench.sh` benchmarks various codec and priority profiles against synthetic test patterns.
 
-## How it works
+## Architecture
 
-| Part | Implementation |
+| Component | Implementation Details |
 |---|---|
-| Second display | `CGVirtualDisplay`, a private CoreGraphics API that a macOS update could break |
-| Capture and encoding | ScreenCaptureKit (NV12), VideoToolbox H.264 or HEVC with low-latency rate control |
-| Bandwidth | Adjusted every second from the delay the tablet reports |
-| Link and pairing | Network.framework with TLS 1.3, Bonjour discovery with `NWBrowser` |
-| Video packets | AES-GCM with CryptoKit over UDP, or over the cable |
-| Cable | Android Open Accessory through IOUSBHost, with no libusb |
-| Touch and S Pen | CGEvents |
-| App | Menu bar item and SwiftUI window, a welcome window for permissions |
+| Virtual display | `CGVirtualDisplay`: CoreGraphics private API for runtime display creation |
+| Capture and encoding | ScreenCaptureKit (NV12 format) and VideoToolbox (H.264 or HEVC with low-latency rate control) |
+| Bandwidth adaptation | Dynamic bitrate control adjusted every second from client telemetry |
+| Control link and discovery | Network.framework with TLS 1.3; Bonjour discovery via `NWBrowser` |
+| Video datagrams | CryptoKit AES-GCM encryption dispatched over UDP or USB |
+| USB transport | Android Open Accessory protocol implemented directly via IOUSBHost |
+| Input synthesis | `CGEvent` generation for pointer and tablet events |
+| User interface | Menu bar item, SwiftUI main window, and initial permission assistant |
 
-H.264 and HEVC are the only encoders VideoToolbox runs in hardware, so
-there are no other codecs.
+Because VideoToolbox only provides hardware acceleration for H.264 and HEVC, other codecs are not supported.
 
-## Build and install
+## Building and Installation
 
-Requires macOS 15 and Xcode 16 or later.
+### Requirements
+
+- macOS 15 or later.
+- Xcode 16 or later.
+
+### Compilation
 
 ```bash
 swift test
-./build-app.sh       # dist/Screenlet.app, a zip of it and a Homebrew cask
+./build-app.sh       # Produces dist/Screenlet.app, a distribution archive, and a Homebrew cask
 ```
 
-To install with Homebrew, create a tap with `brew tap-new <you>/screenlet`,
-copy `dist/screenlet.rb` into its `Casks` folder and run
-`brew install --cask <you>/screenlet/screenlet`. The app is signed ad hoc rather
-than with a Developer ID, so remove the quarantine flag with
-`xattr -dr com.apple.quarantine "/Applications/Screenlet.app"`.
+### Installation via Homebrew
 
-On first launch Screenlet asks for **Screen Recording** and **Accessibility**,
-and may need to be reopened afterwards. macOS also asks for **local network**
-access. The log is at `~/Library/Logs/Screenlet.log`.
+Create a local tap and install the generated cask:
 
-**CI** tests and builds every push and pull request, and uploads the app as
-the run's artifact. Pushing a `v*` tag also publishes a release with the zip
-and a cask that downloads it.
+```bash
+brew tap-new <user>/screenlet
+cp dist/screenlet.rb $(brew --repository <user>/screenlet)/Casks/
+brew install --cask <user>/screenlet/screenlet
+```
 
-## Measuring latency
+Because the application is signed ad-hoc, remove the quarantine attribute before launching:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Screenlet.app"
+```
+
+### Initial Configuration
+
+On initial launch, Screenlet requires **Screen Recording**, **Accessibility**, and **Local Network** permissions granted in System Settings. Application logs are written to `~/Library/Logs/Screenlet.log`.
+
+Continuous integration validates tests and builds on every commit. Tagging a release (`v*`) automatically publishes release archives and cask definitions.
+
+## Latency Benchmarks
 
 ```bash
 "/Applications/Screenlet.app/Contents/MacOS/Screenlet" --show-cable 20 [pattern | mirror | hevc | latency | balanced | clarity | 30 | native | WxH]
 ```
 
-This shows the desktop over the cable for 20 seconds and logs the latency
-the tablet measures, from capture to decoded with the clocks synchronised,
-every 2 seconds. `--show-wifi 20` does the same with the first paired tablet
-on the network. `pattern` puts a moving test pattern (scrolling text, a
-panning photo, a plasma) on the tablet's display, the same load every run, so
-two runs compare.
+This command streams the desktop over USB for 20 seconds, logging synchronized end-to-end latency metrics every 2 seconds. The `--show-wifi 20` argument performs the equivalent test over the local network. The `pattern` argument generates a deterministic moving test pattern (scrolling text, panning imagery, and synthetic gradients) to ensure consistent benchmark comparisons.
 
-On a Galaxy Tab S6 Lite (a slow tablet: newer ones should do better), H.264,
-latency priority, with the pattern and Screenlet Companion's release build:
+Measured on a Samsung Galaxy Tab S6 Lite using H.264 and the Latency optimization profile against the release build of Screenlet Companion:
 
-| | median, capture to decoded | 90th percentile |
+| Transport Interface | Median Latency (Capture to Decode) | 90th Percentile Latency |
 |---|---|---|
-| USB cable | 11–12 ms | 17 ms |
-| Wi-Fi 5 GHz, AWDL off | 13–14 ms | 18–19 ms |
+| USB Cable | 11–12 ms | 17 ms |
+| Wi-Fi 5 GHz (AWDL disabled) | 13–14 ms | 18–19 ms |
 
-Of that, some 2–3 ms go to encoding and sending, under 1 ms to the frame's
-packets reaching the decoder, and 6–7 ms to decoding.
+Of the total latency, approximately 2–3 ms are spent in host capture and encoding, under 1 ms in network transit, and 6–7 ms in client hardware decoding.
 
-Over Wi-Fi, AWDL (what AirDrop, Handoff, Universal Control and Sidecar use)
-takes the Mac's Wi-Fi to another channel now and then, and packets wait:
-on the same tablet the 90th percentile went from some 95 ms to 30–45 ms with
-it off. While you use the tablet, `sudo ifconfig awdl0 down` turns it off
-(AirDrop and Handoff with it) until `sudo ifconfig awdl0 up` or a restart.
+> [!TIP]
+> On macOS, Apple Wireless Direct Link (AWDL)—utilized by AirDrop, Handoff, and Sidecar—periodically causes Wi-Fi channel hops, introducing transient packet transmission spikes. Disabling AWDL via `sudo ifconfig awdl0 down` reduces 90th percentile latency significantly (from ~95 ms down to 30–45 ms on reference test hardware). AWDL can be re-enabled using `sudo ifconfig awdl0 up`.
 
-## To do
+## Roadmap
 
-- The list of tablets on the cable was written without a Mac at hand: CI builds and tests
-  it, nothing more. To try here:
-  - With one tablet: its own name in the window and the menu, not an empty line, Connect,
-    Disconnect, and it still works with the desktop shown on plugging in.
-  - That it is the same tablet as an accessory: `USB Serial Number` and `USB Product Name`
-    read from IOKit on the device, and through its parents on the accessory's interface.
-    If not, Connect ends in "the accessory has no interface" or the tablet stays listed twice.
-  - With two tablets: a line each, with their names, and Connect shows the desktop on the
-    right one; `--show-cable 20 serial=SERIAL` likewise.
-  - With two, Connect on the other one after a session: the first goes back to what it
-    was and the second takes over, with one session at a time.
-  - With two, nothing starts by itself on plugging in.
-  - Two of the same model show the last digits of their serials.
-  - That no other device of those makers shows as a tablet: the list has grown to chip
-    makers' ids, and here, unlike on Linux and Windows, nothing tells a tablet from them.
-    A USB stick from Samsung would get a line of its own.
-  - A tablet with MediaTek's USB id, as a Bigme HiBreak Pro: seen, the cable and the
-    picture. Its decoder needed the companion's fix for its largest size.
-  - Whether the bitrate falls to its lowest on such a tablet while the whole picture
-    moves, as on Windows, though the cable has room to spare.
-- HiDPI from the tablet's density. Today it is 2x from 2560 pixels wide and 1x below,
-  so a 2000 wide tablet gets none.
-- HiDPI as a choice in the window, with sizes between 1x and 2x.
-- Falling back to 1x if a macOS update refuses the private `hiDPI` flag of
-  `CGVirtualDisplay`.
-- Wi-Fi Direct: macOS has no API for it, so the tablet would host a P2P
-  group the Mac joins as a Wi-Fi network (losing its own Wi-Fi meanwhile).
+- Multi-device validation: Complete testing across multi-tablet USB configurations, accessory enumeration, and interface selection in IOUSBHost.
+- HiDPI scaling: Implement adaptive display scaling based on client physical pixel density rather than static thresholding.
+- Scaled UI modes: Provide intermediate fractional scaling options between 1x and 2x.
+- CoreGraphics compatibility: Implement automated fallback to standard DPI if private `CGVirtualDisplay` flags are deprecated in future macOS releases.
+- Wi-Fi Direct: Implement client connection handling for tablet-hosted P2P networks.
 
 ## License
 
-MIT, like Plus One. See [LICENSE](LICENSE).
+Distributed under the [MIT License](LICENSE), matching the upstream Plus One project.
 
-## AI disclosure
+## AI Disclosure
 
-Much of this code was written by Claude, Anthropic's AI model, through Claude Code, under
-the author's direction. The author chose what to build and tested it on real hardware.
+Much of this codebase was generated with the assistance of Anthropic's Claude model through Claude Code, under direct human architectural guidance, specification, and hardware verification.

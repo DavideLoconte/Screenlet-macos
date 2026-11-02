@@ -1,13 +1,18 @@
 import AppKit
 
-/// A repeatable test pattern for measuring latency (--show-cable … pattern): scrolling
-/// text, a panning photo, a plasma and a moving square, at 60 Hz.
+/// Generates an animated diagnostic test pattern for measuring latency and visual fidelity at 60 Hz.
+///
+/// Renders animated elements representative of diverse screen content: scrolling typography,
+/// a high-frequency panning photograph, continuous sine plasma, and an oscillating rectangular window.
 final class Pattern: NSView {
     private var offset = 0.0
     private var timer: Timer?
     private var window_: NSWindow?
 
-    /// Shows the pattern on the display, once AppKit knows it, until close().
+    /// Creates and displays the test pattern window on the specified display target.
+    ///
+    /// - Parameter display: CoreGraphics display identifier.
+    /// - Returns: Initialized `Pattern` view instance.
     static func show(on display: CGDirectDisplayID) -> Pattern {
         let pattern = Pattern()
         pattern.open(on: display)
@@ -33,6 +38,7 @@ final class Pattern: NSView {
         }
     }
 
+    /// Dismisses the pattern window and invalidates the animation refresh timer.
     func close() {
         timer?.invalidate()
         window_?.orderOut(nil)
@@ -40,8 +46,7 @@ final class Pattern: NSView {
 
     override var isFlipped: Bool { true }
 
-    /// Photo-like detail from overlapping soft discs (fixed seed), wider than the
-    /// screen so it can pan.
+    /// Procedural high-frequency graphic generated with deterministic pseudo-random discs.
     private lazy var photo: NSImage = {
         var seed: UInt64 = 0x5EED
         func next() -> Double {
@@ -60,7 +65,7 @@ final class Pattern: NSView {
         }
     }()
 
-    /// Frame t of a plasma (sines of the position and time), 640x360.
+    /// Generates frame `t` of a procedural sine plasma to evaluate motion prediction and bitrate allocation.
     private func plasma(_ t: Int) -> NSImage {
         let w = 640, h = 360
         var pixels = [UInt8](repeating: 255, count: w * h * 4)
@@ -85,11 +90,11 @@ final class Pattern: NSView {
     override func draw(_ dirty: NSRect) {
         NSColor.white.setFill()
         bounds.fill()
-        // Gradients, like a photo or wallpaper.
+        // Linear gradients evaluating color banding and quantization.
         let band = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height * 0.25)
         NSGradient(colors: [.systemRed, .systemOrange, .systemYellow, .systemGreen, .systemBlue, .systemPurple])!.draw(in: band, angle: 0)
         NSGradient(starting: .black, ending: .white)!.draw(in: NSRect(x: 0, y: band.maxY, width: bounds.width, height: 40), angle: 0)
-        // Scrolling text, like a document.
+        // Variable-pitch typography evaluating text edge retention.
         let words = "Screenlet sends this Mac's desktop to the tablet; small text shows what the encoder keeps. "
         var y = band.maxY + 50 - offset.truncatingRemainder(dividingBy: 120)
         var size = 9.0
@@ -99,15 +104,14 @@ final class Pattern: NSView {
             y += size * 1.6
             size = size >= 18 ? 9 : size + 1.5
         }
-        // The photo panning, like scrolling a picture. The hardest part.
+        // Continuous photographic pan evaluating inter-frame motion estimation.
         let pan = offset.truncatingRemainder(dividingBy: photo.size.width - bounds.width)
         photo.draw(in: NSRect(x: 0, y: bounds.height - photo.size.height, width: bounds.width, height: photo.size.height),
                    from: NSRect(x: pan, y: 0, width: bounds.width, height: photo.size.height), operation: .copy, fraction: 1)
-        // A plasma, like video: colour changes everywhere that motion prediction
-        // cannot follow, so only the bitrate decides its sharpness.
+        // Sine plasma generating non-translational motion artifacts.
         let video = NSRect(x: bounds.width - 660, y: bounds.height * 0.3, width: 640, height: 360)
         plasma(Int(offset / 4)).draw(in: video)
-        // A moving square, like a dragged window.
+        // Solid geometric shape simulating window movement.
         let x = (sin(offset / 120) * 0.5 + 0.5) * (bounds.width - 200)
         NSColor.systemTeal.setFill()
         NSRect(x: x, y: bounds.height * 0.55, width: 200, height: 200).fill()

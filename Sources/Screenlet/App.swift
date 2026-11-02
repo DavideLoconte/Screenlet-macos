@@ -3,12 +3,12 @@ import Combine
 import Network
 import SwiftUI
 
-/// A string from Localizable.strings, or the key itself.
+/// Returns a localized string for the specified key from Localizable.strings.
 func L(_ key: String) -> String {
     Bundle.main.localizedString(forKey: key, value: key, table: nil)
 }
 
-/// The state and actions behind the menu bar and the window.
+/// Application view model managing connection state, discovery, and user settings.
 final class Model: ObservableObject {
     struct Tablet {
         let id: String          // the first 16 digits of its certificate's fingerprint
@@ -32,11 +32,11 @@ final class Model: ObservableObject {
     @Published var resolution = UserDefaults.standard.string(forKey: "resolution") ?? "auto" {
         didSet { UserDefaults.standard.set(resolution, forKey: "resolution") }
     }
-    /// 0: the tablet's refresh rate (up to 120 Hz, as its decoder keeps up).
+    /// Target frame capture rate in Hertz, or 0 to match the panel refresh rate.
     @Published var fps = UserDefaults.standard.object(forKey: "refresh") as? Int ?? 0 {
         didSet { UserDefaults.standard.set(fps, forKey: "refresh") }
     }
-    /// Show the desktop by itself when a paired tablet is plugged in.
+    /// Automatically initiates streaming when a known paired tablet is connected via USB.
     @Published var autoStart = UserDefaults.standard.object(forKey: "autoStart") as? Bool ?? false {
         didSet { UserDefaults.standard.set(autoStart, forKey: "autoStart") }
     }
@@ -44,7 +44,7 @@ final class Model: ObservableObject {
         didSet { UserDefaults.standard.set(mirror, forKey: "mirror") }
     }
 
-    /// "auto" uses the cable when a tablet is plugged in and Wi-Fi otherwise; or "wifi", "cable".
+    /// Preferred transport medium: `"auto"`, `"wifi"`, or `"cable"`.
     @Published var connection = UserDefaults.standard.string(forKey: "connection") ?? "auto" {
         didSet { UserDefaults.standard.set(connection, forKey: "connection") }
     }
@@ -78,7 +78,7 @@ final class Model: ObservableObject {
         keyframeSeconds = 0
     }
 
-    /// The last report of the session in progress.
+    /// Most recent performance and latency statistics report from the active session.
     @Published var stats: Streamer.Stats?
 
     var mode: DisplaySession.Mode {
@@ -89,7 +89,7 @@ final class Model: ObservableObject {
                                    keyframeSeconds: keyframeSeconds)
     }
 
-    /// The Mac's displays that can be mirrored, excluding Screenlet's: id and name.
+    /// Enumerates capture-capable display monitors available for screen mirroring.
     static func displays() -> [(id: Int, name: String)] {
         NSScreen.screens.compactMap { screen in
             guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
@@ -98,7 +98,7 @@ final class Model: ObservableObject {
         }
     }
 
-    /// The tablet's screen size from the last session.
+    /// Recorded physical panel dimensions from the preceding display session.
     var tabletScreen: (Int, Int)? {
         guard let size = UserDefaults.standard.array(forKey: "tabletScreen") as? [Int], size.count == 2 else { return nil }
         return (size[0], size[1])
@@ -125,13 +125,13 @@ final class Model: ObservableObject {
         }
     }
 
-    /// What the window calls a tablet on the cable: with two of a kind, a bit of their keys too.
+    /// Formats a human-readable display label for an attached USB accessory tablet.
     private func shown(_ plug: Cable.Plug) -> String {
         let name = plug.name.isEmpty ? L("Tablet on the cable") : plug.name
         return plugged.filter { $0.name == plug.name }.count < 2 ? name : "\(name) (\(plug.key.suffix(4)))"
     }
 
-    /// chosen: by the user, who may then be asked to pair. Never for a tablet merely plugged in.
+    /// Initiates a cable session for the specified attached USB accessory.
     private func showOverCable(_ plug: Cable.Plug, chosen: Bool) {
         // No announced id here: any paired tablet will do, and TLS proves which.
         let name = shown(plug)
@@ -144,8 +144,7 @@ final class Model: ObservableObject {
     }
 
     // -- what can be done ----------------------------------------------------------
-    /// An action on a tablet, shown as a menu item (title) or a button (short) in
-    /// the tablet's row of the window.
+    /// User interface action representing a connectable tablet device or state transition.
     struct Action: Identifiable {
         let id: String
         let title: String
@@ -226,7 +225,7 @@ final class Model: ObservableObject {
     }
 
     // -- pairing ---------------------------------------------------------------------
-    /// On the link's thread; the user compares the code on the main thread.
+    /// Prompts the user on the main thread to confirm the numeric SAS pairing code.
     private static func askToPair(_ tablet: String, _ code: String) -> Bool {
         DispatchQueue.main.sync {
             alert(String(format: L("Pair with %@?"), tablet),
@@ -257,8 +256,7 @@ final class Model: ObservableObject {
         session.start()
     }
 
-    /// Calls then(cable) on the main thread once the cable's link is open. It
-    /// stays open for pairing and then the desktop.
+    /// Acquires an open USB accessory transport link before invoking the completion handler.
     private func overCable(_ plug: Cable.Plug, _ then: @escaping (Cable) -> Void) {
         if let cable {
             if cable.key == plug.key { return then(cable) }
@@ -319,7 +317,7 @@ enum Permissions {
 }
 
 // -- the windows ---------------------------------------------------------------------
-/// The header of both windows: the app icon, a title and a short subtitle.
+/// Header component displaying the application icon, primary title, and status indicator.
 struct Header: View {
     let title: String
     let detail: String
@@ -342,7 +340,7 @@ struct Header: View {
     }
 }
 
-/// An SF Symbol on a coloured rounded square, as in System Settings.
+/// Visual badge rendering an SF Symbol on a rounded colored background.
 struct Badge: View {
     let symbol: String
     let color: Color
@@ -356,7 +354,7 @@ struct Badge: View {
     }
 }
 
-/// A setting's label with a "?" button whose popover explains its effect on latency and clarity.
+/// Setting row label accompanied by an explanatory help popover button.
 struct Explained: View {
     let title: String
     let help: String
@@ -504,8 +502,7 @@ struct MainView: View {
     }
 }
 
-/// The settings for those who measure: each overrides what the preset and
-/// the tablet would choose, from the next session; and the live statistics.
+/// Advanced configuration panel providing fine-grained encoder tuning and live telemetry.
 struct AdvancedSections: View {
     @ObservedObject var model: Model
 
@@ -647,8 +644,7 @@ struct WelcomeView: View {
         .padding(.vertical, 4)
     }
 
-    /// Relaunches Screenlet after it quits, since macOS applies a new permission
-    /// only at launch.
+    /// Relaunches the application process to apply newly granted system permissions.
     private func reopen() {
         let path = Bundle.main.bundlePath
         let task = Process()

@@ -3,14 +3,17 @@ import Network
 
 let arguments = CommandLine.arguments
 if arguments.count >= 2, ["--show-cable", "--show-wifi"].contains(arguments[1]) {
-    // A test from the terminal. Shows the desktop on the tablet for a number
-    // of seconds, over the cable or over Wi-Fi to the first paired tablet
-    // found, and logs the latency every 2 s. Options: "mirror" (the main
-    // display), "hevc" or "h264", a priority, "30" or "60" (Hz; the tablet's
-    // otherwise), "native", a resolution, "pattern" (a moving test pattern on
-    // the tablet's display, the same load every run), "measure" (fidelity:
-    // the Mac decodes its own stream and logs its PSNR) or "serial=SERIAL" (which
-    // tablet on the cable; the first otherwise). bench.sh runs them.
+    // Diagnostic CLI execution mode. Streams display output to an attached or discovered companion
+    // device for a specified duration and reports transport statistics at 2-second intervals.
+    // Supported argument options:
+    // - "mirror": Mirror the primary desktop display.
+    // - "hevc" / "h264": Video codec selection.
+    // - "latency" / "balanced" / "clarity": Encoding profile priority.
+    // - "30" / "60": Target refresh rate in Hz.
+    // - "native" / <WIDTHxHEIGHT>: Display resolution mode.
+    // - "pattern": Display procedural animated benchmark pattern on virtual display.
+    // - "measure": Enable PSNR fidelity evaluation pipeline.
+    // - "serial=SERIAL": Target specific USB device serial.
     let seconds = arguments.count > 2 ? Double(arguments[2]) ?? 20 : 20
     var mode = DisplaySession.Mode()
     var pattern = false

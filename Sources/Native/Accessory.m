@@ -9,14 +9,13 @@ static NSError *Error(NSString *message) {
     return [NSError errorWithDomain:@"Screenlet" code:1 userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
-/// A property of service, or of the device above it.
+/** Queries an I/O Registry property from the specified service or its ancestors. */
 static id Property(io_service_t service, CFStringRef name) {
     return CFBridgingRelease(IORegistryEntrySearchCFProperty(service, kIOServicePlane, name, kCFAllocatorDefault,
                                                              kIORegistryIterateRecursively | kIORegistryIterateParents));
 }
 
-/// Which tablet it is: its serial, or with none where it is plugged in. The same as an
-/// accessory, and the same for its interfaces as for the device.
+/** Resolves a stable device identifier based on USB serial number or location ID. */
 static NSString *Key(io_service_t service) {
     NSString *serial = Property(service, CFSTR("USB Serial Number"));
     if ([serial isKindOfClass:NSString.class] && serial.length) return serial;
@@ -24,9 +23,7 @@ static NSString *Key(io_service_t service) {
     return [location isKindOfClass:NSNumber.class] ? location.stringValue : @"";
 }
 
-/// The first IOService of class with these properties and this key (nil: any), or 0.
-/// Uses IOPropertyMatch, because a plain idVendor key only matches in a driver's
-/// personality.
+/** Finds the first matching I/O Registry service for the specified class, properties, and device key. */
 static io_service_t First(const char *class, NSDictionary *properties, NSString *key) {
     CFMutableDictionaryRef matching = IOServiceMatching(class);
     CFDictionarySetValue(matching, CFSTR(kIOPropertyMatchKey), (__bridge CFDictionaryRef)properties);
@@ -59,8 +56,7 @@ static const uint16_t kAndroidVendors[] = {0x04E8, 0x18D1, 0x17EF, 0x2717, 0x2A7
                                            0x339B, 0x1949, 0x0B05, 0x0FCE, 0x1BBB, 0x2B0E,
                                            0x0E8D, 0x05C6, 0x1782, 0x2207};
 
-/// Each device of one of those makers, those in accessory mode only if asked for
-/// (Google's 0x2D00-0x2D05), until each answers YES.
+/** Iterates over attached USB devices matching known Android hardware vendor identifiers. */
 static void EachDevice(BOOL accessories, BOOL (^each)(io_service_t device)) {
     for (size_t i = 0; i < sizeof kAndroidVendors / sizeof kAndroidVendors[0]; i++) {
         CFMutableDictionaryRef matching = IOServiceMatching("IOUSBHostDevice");
@@ -80,7 +76,7 @@ static void EachDevice(BOOL accessories, BOOL (^each)(io_service_t device)) {
     }
 }
 
-/// A device of one of those makers with this key, not one already in accessory mode.
+/** Finds a non-accessory Android device matching the given identifier. */
 static io_service_t AndroidDevice(NSString *key) {
     __block io_service_t found = 0;
     EachDevice(NO, ^BOOL(io_service_t device) {
@@ -152,7 +148,7 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
     return [self openInterface:error] ? self : nil;
 }
 
-/// Asks the tablet to switch to accessory mode and waits for it to reappear.
+/** Sends Android Open Accessory switch requests and waits for device re-enumeration. */
 - (BOOL)switchTablet:(NSArray<NSString *> *)identity error:(NSError **)error {
     io_service_t service = AndroidDevice(_key);
     if (!service) {
@@ -202,8 +198,7 @@ static IOUSBDeviceRequest Request(uint8_t type, uint8_t request, uint16_t index,
     return NO;
 }
 
-/// Opens interface 0 and its two bulk pipes, configuring the device first if
-/// macOS has not.
+/** Claims USB interface 0 and acquires bulk input and output communication pipes. */
 - (BOOL)openInterface:(NSError **)error {
     io_service_t service = 0;
     for (int tries = 0; tries < 20 && !(service = AccessoryInterface(_key)); tries++) {

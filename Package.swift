@@ -6,7 +6,7 @@ let package = Package(
     name: "Screenlet",
     platforms: [.macOS(.v15)],
     targets: [
-        // Objective-C for CGVirtualDisplay (private, declared by hand) and IOUSBHost.
+        // Objective-C interface bridging private CGVirtualDisplay APIs and IOUSBHost.
         .target(name: "Native", cSettings: [.unsafeFlags(["-fobjc-arc"])], linkerSettings: [.linkedFramework("IOUSBHost")]),
         .executableTarget(
             name: "Screenlet",

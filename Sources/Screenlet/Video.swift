@@ -3,10 +3,9 @@ import Foundation
 import ScreenCaptureKit
 import VideoToolbox
 
-/// What the encoder favours, as kbit/s at 1920x1200 and how many average
-/// frames a keyframe may take. Smaller bursts arrive sooner, more bits look
-/// sharper.
+/// Video encoding profile parameters, specifying target bitrate at 1920x1200 and VBV buffer frame allowance.
 enum Priority {
+    /// Returns bitrate in kilobits per second and VBV buffer capacity in frame equivalents for a profile name.
     static func settings(_ name: String) -> (kbps: Int, vbvFrames: Double) {
         switch name {
         case "latency": return (12000, 2)
@@ -16,15 +15,16 @@ enum Priority {
     }
 }
 
-/// Captures a display with ScreenCaptureKit (NV12) and encodes it with
-/// VideoToolbox (H.264 or HEVC) for low latency. Each frame goes to
-/// onFrame(Annex B, keyframe, capture time in ns) on VideoToolbox's thread.
+/// Captures virtual display output using ScreenCaptureKit and encodes frames with VideoToolbox.
+///
+/// Encodes frames to low-latency H.264 or HEVC elementary streams formatted with Annex B start codes
+/// and forwards encoded frames via `onFrame(data, keyframe, captureTimestampNs)`.
 final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
-    static let keyframeSeconds = 10  // unless the settings say otherwise
-    static let keepalive: TimeInterval = 0.1  // resend the last frame when nothing changes
+    static let keyframeSeconds = 10
+    static let keepalive: TimeInterval = 0.1
     static let permissionWait: TimeInterval = 300
-    static let screenRecording = "macOS does not let Screenlet record the screen: allow it in System Settings → "
-        + "Privacy & Security → Screen Recording, then start it again"
+    static let screenRecording = "macOS does not permit Screenlet to record the display: enable Screen Recording in "
+        + "System Settings → Privacy & Security, then restart the session"
 
     private let displayID: CGDirectDisplayID
     private let size: (Int, Int)
@@ -44,7 +44,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
 
     let fidelity = Fidelity.enabled ? Fidelity() : nil
 
-    /// The codecs this Mac encodes in hardware, by their PROTOCOL.md names.
+    /// Supported hardware-accelerated video codecs matching PROTOCOL.md identifiers.
     static let hardwareCodecs: Set<String> = {
         let names: [CMVideoCodecType: String] = [kCMVideoCodecType_H264: "avc", kCMVideoCodecType_HEVC: "hevc"]
         var list: CFArray?
@@ -56,7 +56,18 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         })
     }()
 
-    /// bitrate in kbit/s; vbvFrames from Priority.
+    /// Initializes video capture and hardware encoder session.
+    ///
+    /// - Parameters:
+    ///   - display: CoreGraphics display identifier to capture.
+    ///   - size: Capture frame dimensions `(width, height)`.
+    ///   - fps: Target refresh rate in frames per second.
+    ///   - bitrate: Initial target bitrate in kilobits per second.
+    ///   - vbvFrames: Video Buffer Verifier capacity in frame equivalents.
+    ///   - hevc: Indicates whether to encode in HEVC (`true`) or H.264 (`false`).
+    ///   - keyframeSeconds: Maximum interval in seconds between IDR keyframes.
+    ///   - onFrame: Callback invoked on completion of each encoded frame.
+    ///   - onError: Callback invoked upon unrecoverable capture or encoding failure.
     init(display: CGDirectDisplayID, size: (Int, Int), fps: Int, bitrate: Int, vbvFrames: Double, hevc: Bool,
          keyframeSeconds: Int, onFrame: @escaping (Data, Bool, Int64) -> Void, onError: @escaping (String) -> Void) {
         displayID = display
@@ -67,8 +78,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         self.onError = onError
         super.init()
         let codec = hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
-        // The hardware encoder with low-latency rate control; without it, the
-        // hardware encoder; the default otherwise.
+        // Select low-latency rate control specification if available; fall back to hardware acceleration.
         var lowLatency = false
         let specs: [CFDictionary?] = [
             [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true,
@@ -94,12 +104,12 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
                                                          : kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
             kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * keyframeSeconds,
             kVTCompressionPropertyKey_ExpectedFrameRate: fps,
-            // Said in the stream, so the tablet's decoder does not guess the colours.
+            // Explicit colorimetry signaling matching ITU-R BT.709-2 standards.
             kVTCompressionPropertyKey_ColorPrimaries: kCVImageBufferColorPrimaries_ITU_R_709_2,
             kVTCompressionPropertyKey_TransferFunction: kCVImageBufferTransferFunction_ITU_R_709_2,
             kVTCompressionPropertyKey_YCbCrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_709_2,
         ]
-        // The low-latency encoder never holds a frame back and refuses to be told so.
+        // Low-latency encoders process frames immediately and reject maximum frame delay constraints.
         if !lowLatency { properties[kVTCompressionPropertyKey_MaxFrameDelayCount] = 0 }
         for (key, value) in properties where VTSessionSetProperty(session, key: key, value: value as CFTypeRef) != noErr {
             log("macOS: the encoder does not take", key)
@@ -110,9 +120,9 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private var burst = 0.0  // seconds of the average bitrate a keyframe may use
 
-    /// Sets the bitrate in kbit/s, as Streamer adapts it to the network. Not
-    /// under lock: VideoToolbox takes properties while it encodes, and the
-    /// capture queue must not wait for this.
+    /// Dynamically adjusts the target encoder bitrate in kilobits per second.
+    ///
+    /// Executed outside the lock to avoid blocking the capture pipeline during bitrate adaptation.
     func rate(_ kbps: Int) {
         guard let session else { return }
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: kbps * 1000 as CFNumber)
@@ -120,6 +130,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
                              value: [Int(Double(kbps) * 125 * burst), burst] as CFArray)
     }
 
+    /// Commences screen capture and launches the background frame keepalive watchdog.
     func start() {
         Thread.detachNewThread { [self] in
             do {
@@ -127,8 +138,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
             } catch {
                 return failed(error.localizedDescription)
             }
-            // ScreenCaptureKit sends nothing while the screen is still, so resend
-            // the last frame to repair lost packets and keep the app reporting.
+            // ScreenCaptureKit pauses delivery when screen contents are static; repeat the last frame to sustain transport.
             while !done {
                 Thread.sleep(forTimeInterval: Video.keepalive)
                 lock.lock()
@@ -139,8 +149,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    /// The content ScreenCaptureKit can capture. The first time, macOS asks for
-    /// permission and the session waits with its link open.
+    /// Retrieves shareable screen capture content, prompting for Screen Recording permissions if required.
     private func shareable() throws -> SCShareableContent {
         let deadline = Date().addingTimeInterval(Video.permissionWait)
         var asked = false
@@ -203,7 +212,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    // On ScreenCaptureKit's queue: encode the frame if it is new.
+    // SCStreamOutput sample buffer handler invoked on ScreenCaptureKit's queue.
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[String: Any]],
@@ -217,7 +226,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         lock.unlock()
         guard !skip else { return }
-        // The presentation time is the host clock at capture, the same as the pings'.
+        // Presentation timestamp represents host uptime at frame capture time, aligned with ping measurements.
         let pts = CMSampleBufferGetPresentationTimeStamp(sample)
         let captured = pts.isValid ? Int64(CMTimeConvertScale(pts, timescale: 1_000_000_000, method: .default).value) : nowNanos()
         encode(image, captured: captured)
@@ -243,8 +252,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    /// Converts VideoToolbox's length-prefixed NAL units to Annex B for the app's
-    /// decoder, with a keyframe's parameter sets first.
+    /// Converts sample buffers containing length-prefixed NAL units into Annex B byte streams with prefixed parameter sets.
     static func annexB(_ sample: CMSampleBuffer, hevc: Bool) -> (Data, Bool) {
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]]
         let keyframe = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
@@ -252,7 +260,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         var out = Data()
         var lengthSize: Int32 = 4
         if let format = CMSampleBufferGetFormatDescription(sample) {
-            // H.264's SPS and PPS, or HEVC's VPS, SPS and PPS.
+            // H.264 SPS and PPS, or HEVC VPS, SPS and PPS parameter sets.
             let parameterSet = hevc ? CMVideoFormatDescriptionGetHEVCParameterSetAtIndex
                                     : CMVideoFormatDescriptionGetH264ParameterSetAtIndex
             var count = 0
@@ -272,7 +280,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let block = CMSampleBufferGetDataBuffer(sample) else { return (out, keyframe) }
         let length = CMBlockBufferGetDataLength(block)
         out.reserveCapacity(out.count + length + 64)
-        // Straight from the encoder's memory when it is one piece (it is): one copy.
+        // Attempt zero-copy retrieval when the underlying block buffer is contiguous.
         var pointer: UnsafeMutablePointer<CChar>?
         var contiguous = 0
         if CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: &contiguous, totalLengthOut: nil,
@@ -285,7 +293,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         return (data.withUnsafeBytes { convert($0, lengthSize: Int(lengthSize), into: out) }, keyframe)
     }
 
-    /// Appends length-prefixed NAL units to out with start codes.
+    /// Translates length-prefixed NAL units into 4-byte start code prefixed Annex B format.
     static func convert(_ data: UnsafeRawBufferPointer, lengthSize: Int, into out: Data) -> Data {
         var out = out
         var at = 0
@@ -305,13 +313,14 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         data.withUnsafeBytes { convert($0, lengthSize: lengthSize, into: out) }
     }
 
+    /// Forces generation of an instantaneous decoder refresh (IDR) keyframe on the subsequent frame.
     func keyframe() {
         lock.lock()
-        force = true  // the next frame, or the keepalive's at the latest
+        force = true
         lock.unlock()
     }
 
-    /// Pauses capture and encoding while the app does not show the desktop.
+    /// Suspends or resumes screen capture during client background or minimized state.
     func pause(_ now: Bool) {
         lock.lock()
         paused = now
@@ -325,6 +334,7 @@ final class Video: NSObject, SCStreamOutput, SCStreamDelegate {
         onError(message)
     }
 
+    /// Terminates screen capture, invalidates the VideoToolbox compression session, and releases buffer allocations.
     func stop() {
         lock.lock()
         done = true

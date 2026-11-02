@@ -2,11 +2,10 @@ import Foundation
 import Native
 import Network
 
-/// Screenlet over the USB cable (PROTOCOL.md, "The cable"). The tablet is the
-/// Mac's USB accessory, with one bulk stream each way carrying what would go
-/// over the network. Companion TLS connections enter through a loopback TCP
-/// listener, so TLS stays end to end. Display datagrams go straight to the
-/// stream, one frame per write.
+/// Manages the USB accessory transport layer connecting to the tablet over bulk endpoints.
+///
+/// Multiplexes TLS control connections through a local loopback TCP listener and streams
+/// display datagrams directly across the underlying IOUSBHost accessory interface.
 final class Cable {
     enum Kind: UInt8 { case hello = 0, open, data, close, datagram }
     static let identity = ["Screenlet", "Screenlet", "Screenlet on the Mac", "1",
@@ -33,18 +32,18 @@ final class Cable {
     var onDatagram: ((Data) -> Void)?
     var onLost: ((Error) -> Void)?
 
-    /// A tablet on the cable, whatever it shows itself as for now.
+    /// Attached USB tablet device descriptor.
     struct Plug: Equatable {
         let key: String
         let name: String
     }
 
-    /// The tablets connected, those in accessory mode too.
+    /// Enumerates currently attached tablet devices across standard and accessory USB modes.
     static var plugged: [Plug] { POAccessory.tablets().map { Plug(key: $0["key"] ?? "", name: $0["name"] ?? "") } }
 
     var key: String { accessory.key }
 
-    /// Switches this tablet (nil: the first) to accessory mode and waits for the app to answer. Blocks.
+    /// Initializes an accessory session on the specified tablet and awaits handshake acknowledgment.
     init(tablet: String? = nil) throws {
         accessory = try POAccessory(tablet: tablet, identity: Cable.identity)
         do {
@@ -67,7 +66,7 @@ final class Cable {
         return out
     }
 
-    /// Removes and returns the complete frames in buffer. Throws on a frame over maxFrame.
+    /// Extracts and parses complete multiplexing frames from the input buffer.
     static func frames(_ buffer: inout Data) throws -> [(Kind, UInt8, Data)] {
         var found: [(Kind, UInt8, Data)] = []
         var at = buffer.startIndex
@@ -103,8 +102,7 @@ final class Cable {
         return try Cable.frames(&buffer)
     }
 
-    /// Sends HELLO until the app reads it (Android asks the user once) and waits
-    /// for the reply. Anything open before is closed on both sides.
+    /// Transmits handshake negotiation frames and awaits acknowledgment from the companion app.
     private func hello() throws {
         let deadline = Date().addingTimeInterval(Cable.answerWait)
         while (try? write(Cable.frame(.hello, 0), timeout: 1)) == nil {
@@ -229,8 +227,7 @@ final class Cable {
     /// Sends one frame's packets in as few USB writes as the app accepts.
     private let batch = NSMutableData(capacity: Cable.batch)!
 
-    /// From one thread at a time (Streamer's sender): each datagram framed
-    /// straight into one buffer kept for it, written as it fills.
+    /// Batches and transmits display datagram frames across the USB accessory endpoint.
     func send(datagrams: [Data]) throws {
         do {
             for datagram in datagrams {

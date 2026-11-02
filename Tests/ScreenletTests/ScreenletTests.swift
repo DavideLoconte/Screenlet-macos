@@ -4,12 +4,11 @@ import Foundation
 import Testing
 @testable import Screenlet
 
-// The shared vectors (PROTOCOL.md, vectors.json): the Android app and
-// Screenlet for GNOME check the same values.
+// Reference test vectors defined in PROTOCOL.md and vectors.json.
 private let vectors: [String: [String: Any]] = {
     let url = Bundle.module.url(forResource: "vectors", withExtension: "json")!
     let all = try! JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
-    return all.compactMapValues { $0 as? [String: Any] }  // the sections, not the comment
+    return all.compactMapValues { $0 as? [String: Any] }
 }()
 
 private func hex(_ section: String, _ key: String) -> Data {
@@ -39,7 +38,7 @@ private func hex(_ section: String, _ key: String) -> Data {
     let monitor = Monitor(display: 0, size: (1000, 1000), quiet: true)
     let input = Input(monitor: monitor, size: (1000, 1000), clock: { 0 })
     #expect(input.packet(hex("input", "body")))
-    #expect(monitor.posted.contains("near"))  // the pen came in range
+    #expect(monitor.posted.contains("near"))  // stylus in-range proximity reported
 }
 
 @Test func sizesAtTheTabletsProportions() {
@@ -48,15 +47,15 @@ private func hex(_ section: String, _ key: String) -> Data {
     #expect(Sizes.auto((2800, 1752), wifi: true) == (1920, 1202))
     #expect(Sizes.auto((2560, 1600), wifi: true) == (1920, 1200))
     #expect(Sizes.auto((2000, 1200), wifi: true) == (2000, 1200))
-    #expect(Sizes.auto((2400, 1500), wifi: true) == (1920, 1200))   // not in the table: closest to 1920x1200
+    #expect(Sizes.auto((2400, 1500), wifi: true) == (1920, 1200))   // unmatched resolution: select closest aspect-ratio fit
 }
 
 @Test func chosenAndMirroredSizes() {
     #expect(Sizes.choose("tablet", (2000, 1200), wifi: true) == (2000, 1200))
     #expect(Sizes.choose("1440x864", (2000, 1200), wifi: true) == (1440, 864))
-    #expect(Sizes.choose("1440x900", (2000, 1200), wifi: true) == (2000, 1200))  // wrong proportions: automatic
+    #expect(Sizes.choose("1440x900", (2000, 1200), wifi: true) == (2000, 1200))  // mismatched aspect ratio: default to native dimensions
     #expect(Sizes.fit((2880, 1800), into: (2000, 1200)) == (1920, 1200))
-    #expect(Sizes.fit((1440, 900), into: (1200, 2000)) == (1440, 900))   // already smaller: unchanged
+    #expect(Sizes.fit((1440, 900), into: (1200, 2000)) == (1440, 900))   // dimension matches target bounds without scaling
 }
 
 @Test func cableFramesAcrossReads() throws {
@@ -82,13 +81,13 @@ private func hex(_ section: String, _ key: String) -> Data {
     }
     channel.received(from(5))
     #expect(channel.receive(timeout: 0.1) == Data([Packet.keyframe]))
-    channel.received(from(5))                                                  // replayed
-    channel.received(from(3, Packet.ping))                                     // late, in the window: taken
+    channel.received(from(5))                                                  // replayed counter rejected
+    channel.received(from(3, Packet.ping))                                     // late counter within sliding replay window accepted
     #expect(channel.receive(timeout: 0.1) == Data([Packet.ping]))
     var tampered = from(6)
     tampered[Packet.nonceSize] ^= 1
-    channel.received(tampered)                                                 // not authentic
-    channel.received(Channel.seal(Data([1]), key: key, direction: Packet.fromPC, count: 7))  // our own direction
+    channel.received(tampered)                                                 // authentication verification failure
+    channel.received(Channel.seal(Data([1]), key: key, direction: Packet.fromPC, count: 7))  // incorrect packet direction discarded
     channel.received(Channel.seal(Data([1]), key: SymmetricKey(size: .bits256), direction: Packet.fromApp, count: 8))
     #expect(channel.receive(timeout: 0.1) == nil)
 }
@@ -96,7 +95,7 @@ private func hex(_ section: String, _ key: String) -> Data {
 @Test func replayWindow() {
     var r = Replay()
     for c: UInt64 in [0, 2, 1, 70] { #expect(r.fresh(c)); r.accept(c) }
-    #expect(!r.fresh(1) && !r.fresh(70) && !r.fresh(6))   // seen, seen, too old
+    #expect(!r.fresh(1) && !r.fresh(70) && !r.fresh(6))   // duplicate counter, replayed sequence, expired counter outside window
     #expect(r.fresh(69) && r.fresh(71))
 }
 
@@ -123,7 +122,7 @@ private let rightDown = "\(CGEventType.rightMouseDown.rawValue)"
     let clock = Clock()
     let input = Input(monitor: Monitor(display: 0, size: (1000, 1000), quiet: true), size: (1000, 1000), clock: { clock.now })
     #expect(input.packet(fingers([(1, 10000, 10000)])))
-    #expect(input.monitor.posted == [moved])                 // no wait: the pointer is there
+    #expect(input.monitor.posted == [moved])                 // immediate cursor motion dispatch without delay
     clock.now = 0.05
     #expect(input.packet(fingers([])))
     #expect(input.monitor.posted == [moved, moved, down, up])
@@ -134,7 +133,7 @@ private let rightDown = "\(CGEventType.rightMouseDown.rawValue)"
     let input = Input(monitor: Monitor(display: 0, size: (1000, 1000), quiet: true), size: (1000, 1000), clock: { clock.now })
     #expect(input.packet(fingers([(1, 10000, 10000)])))
     clock.now = 0.016
-    #expect(input.packet(fingers([(1, 12000, 10000)])))      // 30 pixels on
+    #expect(input.packet(fingers([(1, 12000, 10000)])))      // drag threshold exceeded
     #expect(input.monitor.posted == [moved, moved, down, dragged])
 }
 
@@ -156,7 +155,7 @@ private let rightDown = "\(CGEventType.rightMouseDown.rawValue)"
     clock.now = 0.1
     #expect(input.packet(fingers([])))
     #expect(input.monitor.clicks == [rightDown])
-    #expect(!input.packet(Data([Packet.input, 11])))  // more fingers than a hand
+    #expect(!input.packet(Data([Packet.input, 11])))  // exceeds maximum supported contact count
 
     let scrolled = Input(monitor: Monitor(display: 0, size: (1000, 1000), quiet: true), size: (1000, 1000), clock: { clock.now })
     #expect(scrolled.packet(fingers([(1, 10000, 10000), (2, 20000, 10000)])))
@@ -184,7 +183,7 @@ private let rightDown = "\(CGEventType.rightMouseDown.rawValue)"
 @Test func psnrOfLuma() {
     let a = Data(repeating: 100, count: 16)
     #expect(Fidelity.psnr(a, a, width: 4, height: 4, stride: 4) == 100)
-    // Each sample off by 1: MSE 1, PSNR 20·log10(255) ≈ 48.13 dB.
+    // Unit sample variance yields MSE of 1.0 (PSNR = 20·log10(255) ≈ 48.13 dB).
     let b = Data(repeating: 101, count: 16)
     #expect(abs(Fidelity.psnr(a, b, width: 4, height: 4, stride: 4) - 48.13) < 0.01)
 }

@@ -3,21 +3,17 @@ import Foundation
 import Native
 import Network
 
-/// The display stream (PROTOCOL.md, "The display"). Each encoded frame is
-/// split into packets sealed with AES-GCM, using a key sent over the paired
-/// TLS link, and sent as soon as the encoder produces it.
+/// Protocol framing and packet definitions for display stream transport.
 enum Packet {
     static let video: UInt8 = 1, keyframe: UInt8 = 2, ping: UInt8 = 3, pong: UInt8 = 4, stats: UInt8 = 5, input: UInt8 = 6
     static let fromPC: UInt32 = 1, fromApp: UInt32 = 2
     static let nonceSize = 12, tagSize = 16, videoHeader = 18
-    /// Video bytes per packet, so that with header, nonce and tag it fits one Ethernet frame.
+    /// Video bytes per packet, sized to fit a single frame within the standard Ethernet MTU.
     static let payload = 1472 - videoHeader - nonceSize - tagSize
-    /// Few large packets, as each costs the app a decryption (some 0.2 ms on a slow
-    /// tablet): the cable has no MTU, and over Wi-Fi IP fragments them, which loses
-    /// no more frames than small packets, as a packet lost loses its frame either way.
+    /// Maximum video payload for large packets used across USB and IP-fragmented Wi-Fi links.
     static let largePayload = 16384 - videoHeader - nonceSize - tagSize
     static let stages = 5
-    /// STATS with five stages (PROTOCOL.md §3.5), and an earlier app's with two measures.
+    /// Binary telemetry structure sizing for 5-stage latency metrics and backward compatibility.
     static let statsSize = 1 + 4 + 4 + stages * 3 * 2, earlierStatsSize = 1 + 4 + 4 + 6 * 2
 }
 
@@ -33,7 +29,7 @@ extension Data {
     }
 }
 
-/// Display sizes for a tablet, at its proportions, largest first.
+/// Display resolution calculations, aspect ratio scaling, and bitrate allocation for tablet displays.
 enum Sizes {
     static let widths = [3840, 2560, 2304, 1920, 1680, 1440, 1280]
     static let reference = 1920 * 1200   // the size the bitrates are set for
@@ -50,9 +46,7 @@ enum Sizes {
         return found
     }
 
-    /// Samsung tablets by the native resolution they report (landscape): their
-    /// names, and the width Automatic uses over Wi-Fi, where the densest
-    /// screens would need more bandwidth than most networks give.
+    /// Samsung tablet panels in landscape orientation, marketing names, and maximum automatic Wi-Fi widths.
     static let tablets: [[Int]: (models: String, wifiWidth: Int)] = [
         [1340, 800]: ("Galaxy Tab A7 Lite, Tab A9", 1340),
         [1920, 1200]: ("Galaxy Tab A8, Tab A9+", 1920),
@@ -67,8 +61,7 @@ enum Sizes {
         tablets[[max(screen.0, screen.1), min(screen.0, screen.1)]]?.models
     }
 
-    /// Native over the cable. Over Wi-Fi, the width the table gives for this
-    /// tablet, or the size closest to 1920x1200 for one it does not know.
+    /// Determines the optimal automatic resolution based on panel dimensions and connection type.
     static func auto(_ screen: (Int, Int), wifi: Bool) -> (Int, Int) {
         let sizes = all(screen)
         guard wifi else { return sizes[0] }
@@ -82,8 +75,7 @@ enum Sizes {
     // TODO: HiDPI as a choice in the window, with sizes between 1x and 2x.
     static func scale(_ size: (Int, Int)) -> Int { size.0 >= hidpiWidth ? 2 : 1 }
 
-    /// The size the setting asks for on this tablet, or the automatic size if
-    /// the setting does not fit its proportions.
+    /// Resolves a resolution specification string (`"auto"`, `"tablet"`, or `"WxH"`) to concrete display dimensions.
     static func choose(_ resolution: String, _ screen: (Int, Int), wifi: Bool) -> (Int, Int) {
         let sizes = all(screen)
         if resolution == "tablet" { return sizes[0] }
@@ -91,14 +83,13 @@ enum Sizes {
         return sizes.first { asked == [$0.0, $0.1] } ?? auto(screen, wifi: wifi)
     }
 
-    /// A display's size in pixels.
+    /// Queries the physical pixel dimensions of a CoreGraphics display.
     static func pixels(_ display: CGDirectDisplayID) -> (Int, Int) {
         guard let mode = CGDisplayCopyDisplayMode(display) else { return (CGDisplayPixelsWide(display), CGDisplayPixelsHigh(display)) }
         return (mode.pixelWidth, mode.pixelHeight)
     }
 
-    /// size scaled down to fit screen in either orientation, keeping proportions
-    /// and even dimensions. Used for a mirrored display, which the app letterboxes.
+    /// Scales display dimensions down to fit within the tablet screen boundaries.
     static func fit(_ size: (Int, Int), into screen: (Int, Int)) -> (Int, Int) {
         let tablet = size.0 >= size.1 ? (max(screen.0, screen.1), min(screen.0, screen.1))
                                        : (min(screen.0, screen.1), max(screen.0, screen.1))
@@ -111,7 +102,7 @@ enum Sizes {
     }
 }
 
-/// The session's sealed packets in both directions, over UDP or the cable.
+/// Cryptographic transport channel handling AES-GCM packet sealing and unsealing across UDP and USB.
 final class Channel {
     private let key: SymmetricKey
     private let lock = NSLock()
@@ -151,7 +142,7 @@ final class Channel {
         Thread.detachNewThread { [self] in receiving() }
     }
 
-    /// Sets the app's address and the port it announced.
+    /// Configures the remote companion host address and UDP port destination.
     func app(host: String, port: UInt16) {
         app = sockaddr_in(sin_len: UInt8(MemoryLayout<sockaddr_in>.size), sin_family: sa_family_t(AF_INET),
                           sin_port: port.bigEndian, sin_addr: in_addr(s_addr: inet_addr(host)), sin_zero: (0, 0, 0, 0, 0, 0, 0, 0))
@@ -173,7 +164,7 @@ final class Channel {
         return try! AES.GCM.seal(body, using: key, nonce: try! AES.GCM.Nonce(data: nonce)).combined!
     }
 
-    /// Seals and sends bodies together, so a frame's packets take one USB write.
+    /// Encrypts and transmits a sequence of packet bodies over the active transport.
     func send(_ bodies: [Data]) {
         let packets = bodies.map(seal)
         if let cable {
@@ -223,7 +214,7 @@ final class Channel {
         arrived.signal()
     }
 
-    /// The next body from the app, or nil after timeout.
+    /// Receives and decrypts the next payload from the inbox up to the specified timeout.
     func receive(timeout: TimeInterval) -> Data? {
         guard arrived.wait(timeout: .now() + timeout) == .success else { return nil }
         lock.lock()
@@ -238,8 +229,7 @@ final class Channel {
     }
 }
 
-/// The counts accepted from the app: the highest and a window of 64 below
-/// it, so a packet Wi-Fi delivered late is taken once, a replay never.
+/// Sliding-window replay protection filter tracking sequence numbers across a 64-packet history.
 struct Replay {
     private var highest: UInt64?
     private var window: UInt64 = 0  // bit i: highest - i was accepted
@@ -262,7 +252,7 @@ struct Replay {
     }
 }
 
-/// Sends the encoded display to the app and handles its input and reports.
+/// Dispatches encoded video frames and processes incoming input events and latency telemetry.
 final class Streamer {
     static let minKeyframeGap: TimeInterval = 0.25  // the app keeps asking until one arrives
     static let idleWait: TimeInterval = 0.25
@@ -275,8 +265,7 @@ final class Streamer {
     private var lastKeyframe = Date.distantPast
     private var encoded: [Double] = []   // ms from capture to encoded since the last report
     private var sentMs: [Double] = []    // ms from capture to sent
-    /// Packets go out from here, never from VideoToolbox's thread: a slow USB
-    /// write must not hold the encoder's next frame.
+    /// Background dispatch queue dedicated to packet transmission and socket writes.
     private let sender = DispatchQueue(label: "screenlet.send", qos: .userInteractive)
     private var bytes = 0                // of video since the last report
     // The bitrate adapts like a TCP window: down a third when frames arrive
@@ -299,7 +288,7 @@ final class Streamer {
     var onPaused: ((Bool) -> Void)?
     var onStats: ((Stats) -> Void)?
 
-    /// One report from the app, for the window's statistics.
+    /// Latency, throughput, and error metrics report received from the companion app.
     struct Stats {
         let fps: Int, lost: Int
         let latency: Double, latency90: Double   // ms from capture to decoded
@@ -308,8 +297,7 @@ final class Streamer {
         let kbps: Int, cap: Int
     }
 
-    /// packets: "small" (one Ethernet frame each), "large", or "auto" (large,
-    /// small if no frame arrives in large ones over Wi-Fi).
+    /// Initializes a streamer instance configured with the specified display dimensions and encoding settings.
     init(channel: Channel, display: CGDirectDisplayID, size: (Int, Int), fps: Int, bitrate: Int, vbvFrames: Double,
          hevc: Bool, keyframeSeconds: Int, packets: String, wifi: Bool, input: Input?, onError: @escaping (String) -> Void) {
         self.channel = channel
@@ -344,7 +332,7 @@ final class Streamer {
 
     private var activity: NSObjectProtocol?
 
-    /// Called on the encoder's thread with one frame: on its way at once, from the sender.
+    /// Invoked on the encoder thread to packetize and dispatch a newly completed video frame.
     private func send(_ data: Data, keyframe: Bool, captured: Int64) {
         let encodedAt = nowNanos()
         sender.async { [self] in packetize(data, keyframe: keyframe, captured: captured, encodedAt: encodedAt) }
@@ -407,9 +395,7 @@ final class Streamer {
         }
     }
 
-    /// The app's measures: five stages × (median, p90, max) in ms (PROTOCOL.md
-    /// §3.5); from an earlier app, capture to decoded and first packet to
-    /// decoded, the other stages unknown (nil).
+    /// Extracts multi-stage latency quantile distributions from a received binary telemetry payload.
     static func stages(_ body: Data) -> [[Double]?] {
         let values = (0 ..< (body.count - 9) / 2).map { Double(body.big(UInt16.self, at: 9 + 2 * $0)) / 10 }
         let triples = stride(from: 0, to: values.count, by: 3).map { Array(values[$0 ..< $0 + 3]) }
@@ -456,8 +442,7 @@ final class Streamer {
         }
     }
 
-    /// Adjusts the bitrate after a report. On time means close to the best delay
-    /// of recent reports, which absorbs the link's base latency and clock offset.
+    /// Evaluates latency and loss metrics to dynamically adapt video encoder bitrate.
     private func adapt(median: Double, lost: UInt32) {
         medians.append(median)
         if medians.count > 20 { medians.removeFirst() }
@@ -487,7 +472,7 @@ final class Streamer {
         }
     }
 
-    /// Whether the app shows the desktop. Nothing is captured or encoded while it does not.
+    /// Updates streaming state based on whether the tablet is currently foregrounding the display.
     private func visible(_ now: Bool) {
         guard now != shown else { return }
         shown = now
@@ -504,13 +489,9 @@ final class Streamer {
     }
 }
 
-/// A display session with a paired tablet: the display, its stream and the
-/// tablet's touch and pen input, for as long as the app shows it. Callbacks
-/// run on the main thread.
+/// Manages an active display session with a paired tablet, coordinating virtual display and streamer components.
 final class DisplaySession {
-    /// How the desktop reaches the tablet: a new display (resolution "auto"
-    /// as Sizes.auto chooses, "tablet" for native, or "WxH"), or one of
-    /// the Mac's displays mirrored.
+    /// Configuration options governing virtual display dimensions, target frame rates, and encoding presets.
     struct Mode {
         var resolution = "auto"
         var fps = 0                  // 0: the tablet's refresh rate, up to maxFps
@@ -543,8 +524,7 @@ final class DisplaySession {
     var onPaused: ((Bool) -> Void)?
     var onStats: ((Streamer.Stats) -> Void)?
 
-    /// ask: pairs first with a tablet not paired yet, asking the user; without it, such a
-    /// tablet ends the session.
+    /// Initializes a display session targeting candidate network endpoints or a USB accessory connection.
     init(endpoints: [NWEndpoint], expect: String?, cable: Cable?, mode: Mode, ask: ((String, String) -> Bool)? = nil) {
         self.endpoints = endpoints
         self.expect = expect
@@ -559,13 +539,13 @@ final class DisplaySession {
 
     static let maxFps = 120
 
-    /// The capture rate for a panel of refresh Hz: 60 when it does not say.
+    /// Determines the target frame capture rate based on the panel refresh rate.
     static func fps(_ refresh: Double?) -> Int {
         guard let refresh, refresh >= 30 else { return 60 }
         return min(maxFps, Int(refresh.rounded()))
     }
 
-    /// Ends the session now. Call on the main thread; the link's thread tells the app.
+    /// Terminates the active display session and tears down underlying resources.
     func stop() {
         guard !stopped else { return }
         stopped = true
@@ -635,8 +615,7 @@ final class DisplaySession {
         }
     }
 
-    /// Pings for as long as the session lasts, since the app drops a silent Mac,
-    /// and ends it when the app hangs up or stop() is called.
+    /// Transmits periodic keepalive pings over the control link until session termination.
     private func hold(_ link: Link) throws {
         var gone: Error?
         let got = DispatchSemaphore(value: 0)

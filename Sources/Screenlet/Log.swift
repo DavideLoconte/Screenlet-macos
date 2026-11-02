@@ -1,7 +1,8 @@
 import Foundation
 
-/// The host clock in nanoseconds. ScreenCaptureKit stamps frames with it, and
-/// the tablet's pings are matched against it.
+/// Returns the monotonic raw host clock in nanoseconds.
+///
+/// Used for ScreenCaptureKit frame presentation timestamps and round-trip ping latency measurements.
 @inline(__always) func nowNanos() -> Int64 {
     Int64(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
 }
@@ -13,7 +14,7 @@ private let stamp: DateFormatter = {
     return f
 }()
 
-/// Writes a line to ~/Library/Logs/Screenlet.log (visible in Console) and stderr.
+/// Writes a timestamped log entry to standard error and `~/Library/Logs/Screenlet.log`.
 func log(_ items: Any...) {
     let line = "\(stamp.string(from: Date())) " + items.map { "\($0)" }.joined(separator: " ") + "\n"
     logQueue.async {
@@ -29,11 +30,12 @@ func log(_ items: Any...) {
     }
 }
 
-/// Runs fn on the main thread.
+/// Dispatches a closure asynchronously onto the main dispatch queue.
 func later(_ fn: @escaping () -> Void) {
     DispatchQueue.main.async(execute: fn)
 }
 
+/// Generic error representation encapsulating a localized failure message.
 struct Failure: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
